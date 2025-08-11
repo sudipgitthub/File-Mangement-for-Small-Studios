@@ -7,9 +7,11 @@ Set an environment variable HOUDINI_PACKAGE_DIR to point to the root directory (
 The PixelLab.json file, located in the root directory alongside PixelLab-Tools, uses this variable to define paths inside the package.
 Inside PixelLab-Tools, the MainMenuCommon.xml file configures menus for Houdini.
 The subfolders ffmpeg, otls, and scripts contain respective tools, libraries, and scripts used by the PixelLab tools.
-This setup allows Houdini to correctly load and access the PixelLab tools and their dependencies.<img width="337" height="332" alt="Screenshot 2025-08-11 093639" src="https://github.com/user-attachments/assets/bc5a57e5-ca40-4380-b4fc-ffba93a08c09" />
+This setup allows Houdini to correctly load and access the PixelLab tools and their dependencies.
+<img width="337" height="332" alt="Screenshot 2025-08-11 093639" src="https://github.com/user-attachments/assets/bc5a57e5-ca40-4380-b4fc-ffba93a08c09" />
 
 After sussecfully setting up the path and Enviroment variable you will find two new menu called Pixel Lab and Flipbook lab like this ~
+
 <img width="336" height="302" alt="Screenshot 2025-08-11 100928" src="https://github.com/user-attachments/assets/3cfcb21c-ef9e-468e-86bd-8521bf7441af" />
 
 Here is some working principles called Houdini Lab tool ~
