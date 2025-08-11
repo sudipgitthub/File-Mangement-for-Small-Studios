@@ -1,0 +1,12 @@
+{
+  "recommends": "houdini_version >= '17.5.321'",
+
+  "env": [
+    { "PIXELLAB": "$HOUDINI_PACKAGE_DIR/PixelLab-Tools" },
+    { "PIXEL_OTL": "$PIXELLAB/otls" },
+    { "HOUDINI_OTLSCAN_PATH": "$PIXEL_OTL/base;$PIXEL_OTL/future;$PIXEL_OTL/experimental;$HOUDINI_OTLSCAN_PATH" },
+    { "FFMPEG_PATH": "$PIXELLAB/ffmpeg" }
+  ],
+
+  "path": "$PIXELLAB"
+}
