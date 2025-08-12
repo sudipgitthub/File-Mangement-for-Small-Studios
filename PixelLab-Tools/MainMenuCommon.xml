@@ -6,87 +6,209 @@
     <subMenu id="pixellab_main_menu">
       <label>PixelLab</label>
 
-      <!-- Refresh Viewport -->
-      <scriptItem id="pixellab_refresh_viewport">
-        <label>Refresh Viewport</label>
-        <scriptCode><![CDATA[
-import os
-pixellab = os.getenv("PIXELLAB")
-if pixellab:
-    pixellab = pixellab.replace('/', '\\')
-    script = os.path.join(pixellab, "scripts", "refresh_viewport.py")
-    if os.path.isfile(script):
-        exec(compile(open(script, "rb").read(), script, 'exec'))
-    else:
-        hou.ui.displayMessage("Can't find:\n" + script)
-else:
-    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
-        ]]></scriptCode>
-      </scriptItem>
-
       <!-- Open submenu -->
       <subMenu id="pixellab_open_menu">
         <label>Open</label>
 
+        <!-- Open $HIP -->
         <scriptItem id="pixellab_open_hip_path">
           <label>$HIP Path</label>
           <scriptCode><![CDATA[
 import os
-pixellab = os.getenv("PIXELLAB")
-if pixellab:
-    pixellab = pixellab.replace('/', '\\')
-    script = os.path.join(pixellab, "scripts", "open_hip_directory.py")
-    if os.path.isfile(script):
-        exec(compile(open(script, "rb").read(), script, 'exec'))
+import hou
+import subprocess
+import platform
+
+hip_path = hou.getenv("HIP")
+if hip_path and os.path.isdir(hip_path):
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(hip_path)
+    elif system == "Darwin":
+        subprocess.Popen(["open", hip_path])
     else:
-        hou.ui.displayMessage("Can't find:\n" + script)
+        subprocess.Popen(["xdg-open", hip_path])
 else:
-    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+    hou.ui.displayMessage("Invalid or missing $HIP path.")
           ]]></scriptCode>
         </scriptItem>
 
+        <!-- Open $JOB -->
         <scriptItem id="pixellab_open_job_path">
           <label>$JOB Path</label>
           <scriptCode><![CDATA[
 import os
-pixellab = os.getenv("PIXELLAB")
-if pixellab:
-    pixellab = pixellab.replace('/', '\\')
-    script = os.path.join(pixellab, "scripts", "open_job_directory.py")
-    if os.path.isfile(script):
-        exec(compile(open(script, "rb").read(), script, 'exec'))
+import hou
+import subprocess
+import platform
+
+job_path = hou.getenv("JOB")
+if job_path and os.path.isdir(job_path):
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(job_path)
+    elif system == "Darwin":
+        subprocess.Popen(["open", job_path])
     else:
-        hou.ui.displayMessage("Can't find:\n" + script)
+        subprocess.Popen(["xdg-open", job_path])
 else:
-    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+    hou.ui.displayMessage("Invalid or missing $JOB path.")
           ]]></scriptCode>
         </scriptItem>
 
+        <!-- Open $HOME -->
         <scriptItem id="pixellab_open_home_path">
           <label>Home Path</label>
           <scriptCode><![CDATA[
 import os
-pixellab = os.getenv("PIXELLAB")
-if pixellab:
-    pixellab = pixellab.replace('/', '\\')
-    script = os.path.join(pixellab, "scripts", "open_home_directory.py")
-    if os.path.isfile(script):
-        exec(compile(open(script, "rb").read(), script, 'exec'))
+import hou
+import subprocess
+import platform
+
+home_path = os.path.expanduser("~")
+if os.path.isdir(home_path):
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(home_path)
+    elif system == "Darwin":
+        subprocess.Popen(["open", home_path])
     else:
-        hou.ui.displayMessage("Can't find:\n" + script)
+        subprocess.Popen(["xdg-open", home_path])
 else:
-    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+    hou.ui.displayMessage("Cannot locate home directory.")
           ]]></scriptCode>
         </scriptItem>
+
       </subMenu>
 
-      <!-- Lop Manager submenu -->
-      <subMenu id="pixellab_lop_manager_menu">
-        <label>Lop Manager</label>
+      <!-- Cache & Viewport submenu -->
+      <subMenu id="pixellab_cache_viewport_menu">
+        <label>Cache &amp; Viewport</label>
 
-        <scriptItem id="pixellab_lop_manager_launch">
-          <label>Open Lop Manager</label>
+        <!-- Clear SOP Cache -->
+        <scriptItem id="pixellab_clear_sop_cache">
+          <label>Clear SOP Cache</label>
           <scriptCode><![CDATA[
+hou.hscript("sopcache -c")
+hou.ui.displayMessage("SOP Cache Cleared.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Clear DOP Cache -->
+        <scriptItem id="pixellab_clear_dop_cache">
+          <label>Clear DOP Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("dopcache -c")
+hou.ui.displayMessage("DOP Cache Cleared.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Clear Texture Cache -->
+        <scriptItem id="pixellab_clear_texture_cache">
+          <label>Clear Texture Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("texcache -c")
+hou.ui.displayMessage("Texture Cache Cleared.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Clear Temp Cache -->
+        <scriptItem id="pixellab_clear_temp_cache">
+          <label>Clear Temp Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("glcache -c")
+hou.ui.displayMessage("Temp Cache Cleared.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Clear Viewport Cache -->
+        <scriptItem id="pixellab_clear_viewport_cache">
+          <label>Clear Viewport Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("glcache -c")
+hou.ui.displayMessage("Viewport Cache Cleared.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Open GL Cache -->
+        <scriptItem id="pixellab_open_gl_cache">
+          <label>Open GL Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("glcache -o")
+hou.ui.displayMessage("Open GL Cache Opened.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Clear Disk Cache -->
+        <scriptItem id="pixellab_clear_disk_cache">
+          <label>Clear Disk Cache</label>
+          <scriptCode><![CDATA[
+import hou, os, shutil
+
+cache_dir = hou.expandString("$HIP/cache")
+if os.path.exists(cache_dir):
+    try:
+        shutil.rmtree(cache_dir)
+        hou.ui.displayMessage("Disk Cache Deleted at:\n" + cache_dir)
+    except Exception as e:
+        hou.ui.displayMessage("Failed to delete disk cache:\n" + str(e))
+else:
+    hou.ui.displayMessage("No Disk Cache found at:\n" + cache_dir)
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Reset Viewport -->
+        <scriptItem id="pixellab_reset_viewport">
+          <label>Reset Viewport</label>
+          <scriptCode><![CDATA[
+import hou
+
+# Reset viewport display options
+hou.hscript("viewdispopts -r")
+
+viewport = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
+if viewport:
+    vp = viewport.curViewport()
+
+    # Removed framing code as requested
+
+    # Reset lighting to headlight
+    vp.setUseHeadlight(True)
+
+    # Reset background color to Houdini default dark gray
+    default_bg = hou.Color((0.141, 0.141, 0.141))
+    vp.setBackgroundColor(default_bg)
+
+    # Force a redraw
+    vp.draw()
+
+# Clear OpenGL viewport cache
+hou.hscript("glcache -c")
+
+# Clear SOP Cache
+hou.hscript("sopcache -c")
+
+# Clear DOP Cache
+hou.hscript("dopcache -c")
+
+# Clear Texture Cache
+hou.hscript("texcache -c")
+
+hou.ui.displayMessage(
+    "Viewport display options reset.\n"
+    "Lighting and background reset.\n"
+    "Viewport redrawn.\n"
+    "Cleared OpenGL, SOP, DOP, and Texture caches."
+)
+          ]]></scriptCode>
+        </scriptItem>
+
+      </subMenu>
+
+      <!-- Lop Manager -->
+      <scriptItem id="pixellab_lop_manager">
+        <label>Lop Manager</label>
+        <scriptCode><![CDATA[
 import os
 pixellab = os.getenv("PIXELLAB")
 if pixellab:
@@ -98,9 +220,8 @@ if pixellab:
         hou.ui.displayMessage("Can't find:\n" + script)
 else:
     hou.ui.displayMessage("Environment variable PIXELLAB not set.")
-          ]]></scriptCode>
-        </scriptItem>
-      </subMenu>
+        ]]></scriptCode>
+      </scriptItem>
 
       <!-- Utility submenu -->
       <subMenu id="utility_menu">
@@ -141,8 +262,6 @@ else:
     hou.ui.displayMessage("Environment variable PIXELLAB not set.")
           ]]></scriptCode>
         </scriptItem>
-
-        <!-- New added tools -->
 
         <scriptItem id="utility_global_asset_relinker">
           <label>Global Asset Relinker</label>
@@ -278,6 +397,9 @@ else:
 
       </subMenu>
 
+      <!-- Separator before Houdini Lab -->
+      <separatorItem />
+
       <!-- Houdini Lab -->
       <scriptItem id="houdini_lab">
         <label>Houdini Lab</label>
@@ -298,7 +420,7 @@ else:
 
     </subMenu>
 
-    <!-- Flipbook Lab menu (Separate top-level menu) -->
+    <!-- Flipbook Lab menu -->
     <subMenu id="flipbook_lab_main_menu">
       <label>Flipbook Lab</label>
 
@@ -335,7 +457,10 @@ else:
     hou.ui.displayMessage("Environment variable PIXELLAB not set.")
         ]]></scriptCode>
       </scriptItem>
-
+	  
+      <!-- Separator before Houdini Lab -->
+      <separatorItem />
+	  
       <scriptItem id="flipbook_lab_sequence">
         <label>Flipbook Browser</label>
         <scriptCode><![CDATA[
