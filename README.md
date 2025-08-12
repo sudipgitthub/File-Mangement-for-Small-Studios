@@ -1,5 +1,5 @@
 # File-Mangement-for-Small-Studios
-Some Automation and Pipeline tool for houdini 20+ python 3.7 
+Some Automation and Pipeline tool for houdini 20+ python 3.7 Windows Only not tested on Linux
 
 Description: (HOUDINI_PACKAGE_DIR = /some_root_directory)
 
