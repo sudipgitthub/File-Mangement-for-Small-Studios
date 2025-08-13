@@ -43,14 +43,7 @@ class EXRFlipbookBrowser(QtWidgets.QWidget):
         super().__init__()
         self.setObjectName("FlipbookImageSequenceBrowser")
         self.setWindowTitle("EXR Flipbook Browser")
-        self.setMinimumSize(1000, 700)
-        self.setStyleSheet("""
-            QWidget { background-color: #1e1e1e; color: white; border-radius: 10px; }
-            QListWidget { background-color: #1e1e1e; border: none; }
-            QListWidget::item { border-radius: 8px; margin: 5px; }
-            QPushButton { background-color: #3c3f41; color: white; padding: 6px 12px; border-radius: 6px; }
-            QPushButton:hover { background-color: #4a4d50; }
-        """)
+        self.setMinimumSize(750, 450)
 
         self.list_widget = QtWidgets.QListWidget()
         self.list_widget.setViewMode(QtWidgets.QListView.IconMode)
@@ -115,7 +108,7 @@ class EXRFlipbookBrowser(QtWidgets.QWidget):
             self.folders.append((name, folder_path, exrs))
 
             placeholder = QtGui.QPixmap(160, 90)
-            placeholder.fill(QtGui.QColor("#2c2c2c"))
+            placeholder.fill(QtGui.QColor("gray"))
             item = QtWidgets.QListWidgetItem(QtGui.QIcon(placeholder), name)
             item.setData(QtCore.Qt.UserRole, exrs)
             self.list_widget.addItem(item)
@@ -163,7 +156,6 @@ class EXRFlipbookBrowser(QtWidgets.QWidget):
         if not exr_sequence:
             return
 
-        sequence_str = " ".join([f'"{frame}"' for frame in exr_sequence])
         subprocess.Popen(["mplay"] + exr_sequence)
 
 def launch_browser():
