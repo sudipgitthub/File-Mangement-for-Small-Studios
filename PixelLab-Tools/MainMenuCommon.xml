@@ -1,0 +1,539 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mainMenu>
+  <menuBar>
+
+    <!-- PixelLab main menu -->
+    <subMenu id="pixellab_main_menu">
+      <label>PixelLab</label>
+
+      <!-- Open submenu -->
+      <subMenu id="pixellab_open_menu">
+        <label>Open</label>
+
+        <!-- Open $HIP -->
+        <scriptItem id="pixellab_open_hip_path">
+          <label>$HIP Path</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+import subprocess
+import platform
+
+hip_path = hou.getenv("HIP")
+if hip_path and os.path.isdir(hip_path):
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(hip_path)
+    elif system == "Darwin":
+        subprocess.Popen(["open", hip_path])
+    else:
+        subprocess.Popen(["xdg-open", hip_path])
+else:
+    hou.ui.displayMessage("Invalid or missing $HIP path.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Open $JOB -->
+        <scriptItem id="pixellab_open_job_path">
+          <label>$JOB Path</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+import subprocess
+import platform
+
+job_path = hou.getenv("JOB")
+if job_path and os.path.isdir(job_path):
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(job_path)
+    elif system == "Darwin":
+        subprocess.Popen(["open", job_path])
+    else:
+        subprocess.Popen(["xdg-open", job_path])
+else:
+    hou.ui.displayMessage("Invalid or missing $JOB path.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Open $HOME -->
+        <scriptItem id="pixellab_open_home_path">
+          <label>Home Path</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+import subprocess
+import platform
+
+home_path = os.path.expanduser("~")
+if os.path.isdir(home_path):
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(home_path)
+    elif system == "Darwin":
+        subprocess.Popen(["open", home_path])
+    else:
+        subprocess.Popen(["xdg-open", home_path])
+else:
+    hou.ui.displayMessage("Cannot locate home directory.")
+          ]]></scriptCode>
+        </scriptItem>
+
+      </subMenu>
+
+      <!-- Cache & Viewport submenu -->
+      <subMenu id="pixellab_cache_viewport_menu">
+        <label>Cache &amp; Viewport</label>
+
+        <!-- Clear SOP Cache -->
+        <scriptItem id="pixellab_clear_sop_cache">
+          <label>Clear SOP Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("sopcache -c")
+hou.ui.displayMessage("SOP Cache Cleared.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Clear DOP Cache -->
+        <scriptItem id="pixellab_clear_dop_cache">
+          <label>Clear DOP Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("dopcache -c")
+hou.ui.displayMessage("DOP Cache Cleared.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Clear Texture Cache -->
+        <scriptItem id="pixellab_clear_texture_cache">
+          <label>Clear Texture Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("texcache -c")
+hou.ui.displayMessage("Texture Cache Cleared.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Clear Temp Cache -->
+        <scriptItem id="pixellab_clear_temp_cache">
+          <label>Clear Temp Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("glcache -c")
+hou.ui.displayMessage("Temp Cache Cleared.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Clear Viewport Cache -->
+        <scriptItem id="pixellab_clear_viewport_cache">
+          <label>Clear Viewport Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("glcache -c")
+hou.ui.displayMessage("Viewport Cache Cleared.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Open GL Cache -->
+        <scriptItem id="pixellab_open_gl_cache">
+          <label>Open GL Cache</label>
+          <scriptCode><![CDATA[
+hou.hscript("glcache -o")
+hou.ui.displayMessage("Open GL Cache Opened.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Clear Disk Cache -->
+        <scriptItem id="pixellab_clear_disk_cache">
+          <label>Clear Disk Cache</label>
+          <scriptCode><![CDATA[
+import hou, os, shutil
+
+cache_dir = hou.expandString("$HIP/cache")
+if os.path.exists(cache_dir):
+    try:
+        shutil.rmtree(cache_dir)
+        hou.ui.displayMessage("Disk Cache Deleted at:\n" + cache_dir)
+    except Exception as e:
+        hou.ui.displayMessage("Failed to delete disk cache:\n" + str(e))
+else:
+    hou.ui.displayMessage("No Disk Cache found at:\n" + cache_dir)
+          ]]></scriptCode>
+        </scriptItem>
+
+        <!-- Reset Viewport -->
+        <scriptItem id="pixellab_reset_viewport">
+          <label>Reset Viewport</label>
+          <scriptCode><![CDATA[
+import hou
+
+# Reset viewport display options
+hou.hscript("viewdispopts -r")
+
+viewport = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
+if viewport:
+    vp = viewport.curViewport()
+
+    # Removed framing code as requested
+
+    # Reset lighting to headlight
+    vp.setUseHeadlight(True)
+
+    # Reset background color to Houdini default dark gray
+    default_bg = hou.Color((0.141, 0.141, 0.141))
+    vp.setBackgroundColor(default_bg)
+
+    # Force a redraw
+    vp.draw()
+
+# Clear OpenGL viewport cache
+hou.hscript("glcache -c")
+
+# Clear SOP Cache
+hou.hscript("sopcache -c")
+
+# Clear DOP Cache
+hou.hscript("dopcache -c")
+
+# Clear Texture Cache
+hou.hscript("texcache -c")
+
+hou.ui.displayMessage(
+    "Viewport display options reset.\n"
+    "Lighting and background reset.\n"
+    "Viewport redrawn.\n"
+    "Cleared OpenGL, SOP, DOP, and Texture caches."
+)
+          ]]></scriptCode>
+        </scriptItem>
+
+      </subMenu>
+
+      <!-- Lop Manager -->
+      <scriptItem id="pixellab_lop_manager">
+        <label>Lop Manager</label>
+        <scriptCode><![CDATA[
+import os
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "lop_manager.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+        ]]></scriptCode>
+      </scriptItem>
+
+      <!-- Utility submenu -->
+      <subMenu id="utility_menu">
+        <label>Utility</label>
+
+        <scriptItem id="utility_external_path_viewer">
+          <label>External Path Viewer</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "ExternalPathViewer.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <scriptItem id="utility_node_details">
+          <label>Node Details</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "node_details.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <scriptItem id="utility_global_asset_relinker">
+          <label>Global Asset Relinker</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "global_asset_relinker.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <scriptItem id="utility_batch_file_renamer">
+          <label>Batch File Renamer</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "batch_file_renamer.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <scriptItem id="utility_scene_optimizer">
+          <label>Scene Optimizer</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "scene_optimizer.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <scriptItem id="utility_auto_light_rig_builder">
+          <label>Automatic Light Rig Builder</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "auto_light_rig_builder.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <scriptItem id="utility_aov_setup_wizard">
+          <label>AOV Setup Wizard</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "aov_setup_wizard.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+      </subMenu>
+
+      <!-- New Set submenu -->
+      <subMenu id="pixellab_set_menu">
+        <label>Set</label>
+
+        <scriptItem id="set_resolution">
+          <label>Resolution</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "set_resolution.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <scriptItem id="set_framerange">
+          <label>Frame Range</label>
+          <scriptCode><![CDATA[
+import os
+import hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "set_frame_renge.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+      </subMenu>
+
+      <!-- Separator before Deadline -->
+      <separatorItem />
+
+      <!-- Deadline -->
+      <scriptItem id="deadline">
+        <label>Deadline</label>
+        <scriptCode><![CDATA[
+import os
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "deadline.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+        ]]></scriptCode>
+      </scriptItem>
+      <!-- Lab submenu -->
+      <subMenu id="pixellab_lab_menu">
+        <label>Lab</label>
+
+        <scriptItem id="lab_file_browser">
+          <label>File Browser</label>
+          <scriptCode><![CDATA[
+import os, hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "fileBrowser.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <scriptItem id="lab_cache_manager">
+          <label>Cache Manager</label>
+          <scriptCode><![CDATA[
+import os, hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "CacheManager.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <scriptItem id="lab_render_manager">
+          <label>Render Manager</label>
+          <scriptCode><![CDATA[
+import os, hou
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "RenderViewer.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+      </subMenu>
+	  
+      <!-- Flipbook Lab submenu inside PixelLab -->
+      <subMenu id="flipbook_lab_main_menu">
+        <label>Flipbook Lab</label>
+
+        <scriptItem id="flipbook_lab_viewport_flipbook">
+          <label>Viewport</label>
+          <scriptCode><![CDATA[
+import os
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "viewport_flipbook.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+
+        <scriptItem id="flipbook_lab_opengl_flipbook">
+          <label>OpenGL</label>
+          <scriptCode><![CDATA[
+import os
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "opengl_flipbook.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+        
+        <!-- Separator before Flipbook Browser -->
+        <separatorItem />
+        
+        <scriptItem id="flipbook_lab_sequence">
+          <label>Flipbook Browser</label>
+          <scriptCode><![CDATA[
+import os
+pixellab = os.getenv("PIXELLAB")
+if pixellab:
+    pixellab = pixellab.replace('/', '\\')
+    script = os.path.join(pixellab, "scripts", "flipbook_browser.py")
+    if os.path.isfile(script):
+        exec(compile(open(script, "rb").read(), script, 'exec'))
+    else:
+        hou.ui.displayMessage("Can't find:\n" + script)
+else:
+    hou.ui.displayMessage("Environment variable PIXELLAB not set.")
+          ]]></scriptCode>
+        </scriptItem>
+      </subMenu>
+
+    </subMenu>
+
+  </menuBar>
+</mainMenu>

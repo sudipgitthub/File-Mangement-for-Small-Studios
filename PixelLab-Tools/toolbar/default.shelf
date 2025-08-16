@@ -1,0 +1,3950 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<shelfDocument>
+  <!-- This file contains definitions of shelves, toolbars, and tools.
+ It should not be hand-edited when it is being used by the application.
+ Note, that two definitions of the same element are not allowed in
+ a single file. -->
+
+  <toolshelf name="PixelLab" label="PixelLab">
+    <memberTool name="FilesBrowser"/>
+    <memberTool name="CacheManager0"/>
+    <memberTool name="SaveFile++"/>
+    <memberTool name="ViewportFlipbook0"/>
+    <memberTool name="OpenGlFlipbook0"/>
+    <memberTool name="FlipbookBrowser0"/>
+    <memberTool name="RenderViewer0"/>
+    <memberTool name="DeadlineManager0"/>
+    <memberTool name="CameraViewer"/>
+  </toolshelf>
+
+  <tool name="FilesBrowser" label="FilesBrowser" icon="$PIXELLAB/icons/filebrowser.png">
+    <script scriptType="python"><![CDATA[import os, sys, re, subprocess
+from functools import partial
+import hou
+from PySide2 import QtWidgets, QtCore, QtGui
+from PySide2.QtGui import QIcon
+from PySide2.QtWidgets import QLabel, QMessageBox, QStyle
+
+PIXELLAB_PATH = os.environ.get("PIXELLAB", "")
+HIP_ICON_PATH = os.path.join(PIXELLAB_PATH, "icons", "hipicon.png")
+
+class BrowserTool(QtWidgets.QWidget):
+    MAX_RECENT = 10
+
+    def __init__(self, parent=None):
+        super(BrowserTool, self).__init__(parent)
+        self.settings = QtCore.QSettings("YourStudio", "HoudiniBrowser")
+        self.base_sp_path = self.settings.value("browser/base_path", "")
+        self.browser_combos = {}
+
+        recent_files = self.settings.value("browser/recent_files", [])
+        if isinstance(recent_files, str):
+            self.recent_files = [recent_files]
+        elif isinstance(recent_files, list):
+            self.recent_files = recent_files
+        else:
+            self.recent_files = []
+
+    def create_browser_page(self):
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+    
+        # --- Base Path Row ---
+        path_layout = QtWidgets.QHBoxLayout()
+        self.base_path_edit = QtWidgets.QLineEdit(self.base_sp_path)
+        browse_btn = QtWidgets.QPushButton("Browse")
+        browse_btn.setAutoDefault(False)
+        browse_btn.setDefault(False)
+        browse_btn.clicked.connect(self._browser_browse_base_path)
+        path_layout.addWidget(QLabel("Base Path:"))
+        path_layout.addWidget(self.base_path_edit)
+        path_layout.addWidget(browse_btn)
+        layout.addLayout(path_layout)
+    
+        grid = QtWidgets.QGridLayout()
+        grid.setSpacing(2)  # Optional: adjust graphic spacing
+        
+        labels = ["Project Type", "Project", "Shots", "Sequence", "Shot No", "Task"]
+        combos = {}
+        
+        # Define each label/combo position in the grid
+        positions = {
+            0: (0, 0),  # Project Type
+            1: (0, 1),  # Project
+            2: (1, 0),  # Shots
+            3: (1, 1),  # Sequence
+            4: (2, 0),  # Shot No
+            5: (2, 1),  # Task
+        }
+        
+        for idx, label in enumerate(labels):
+            row, col = positions[idx]
+            grid.addWidget(QLabel(f"{label}:"), row, col * 2)
+            cb = QtWidgets.QComboBox()
+            cb.setEditable(False)
+            cb.currentIndexChanged.connect(partial(self._browser_combo_changed, idx))
+            combos[idx] = cb
+            grid.addWidget(cb, row, col * 2 + 1)
+        
+        self.browser_combos = combos
+        layout.addLayout(grid)
+
+    
+        # --- Path display and buttons ---
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)   # remove padding
+        row.setSpacing(2) 
+    
+        # Editable so user can paste or type a path
+        self.browser_path_display = QtWidgets.QLineEdit()
+        self.browser_path_display.setPlaceholderText("Type or paste a folder/file path and press Enter")
+        self.browser_path_display.returnPressed.connect(self._browser_path_entered)
+        row.addWidget(self.browser_path_display)
+    
+        back_btn = QtWidgets.QPushButton("Back")
+        back_btn.setAutoDefault(False)
+        back_btn.setDefault(False)
+        back_btn.clicked.connect(self._browser_go_back)
+        row.addWidget(back_btn)
+    
+        set_btn = QtWidgets.QPushButton("Set")
+        set_btn.setAutoDefault(False)
+        set_btn.setDefault(False)
+        set_btn.clicked.connect(self._browser_save_selection)
+        row.addWidget(set_btn)
+    
+        open_btn = QtWidgets.QPushButton("Open Folder")
+        open_btn.setAutoDefault(False)   # prevent Enter key from triggering this
+        open_btn.setDefault(False)
+        open_btn.clicked.connect(self._browser_open_selected)
+        row.addWidget(open_btn)
+    
+        layout.addLayout(row)
+            
+        # --- File list and Recent files side by side ---
+        file_layout = QtWidgets.QHBoxLayout()
+        
+        file_column = QtWidgets.QVBoxLayout()
+        file_column.addWidget(QLabel("Files:"))
+        self.browser_file_list = QtWidgets.QListWidget()
+        self.browser_file_list.setAlternatingRowColors(True)
+        self.browser_file_list.itemDoubleClicked.connect(self._browser_file_double_clicked)
+        file_column.addWidget(self.browser_file_list)
+        
+        recent_column = QtWidgets.QVBoxLayout()
+        recent_column.addWidget(QLabel("Recent Files:"))
+        self.recent_file_list = QtWidgets.QListWidget()
+        self.recent_file_list.setAlternatingRowColors(True)
+        self.browser_file_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.recent_file_list.itemDoubleClicked.connect(self._recent_file_double_clicked)
+        self.browser_file_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.browser_file_list.customContextMenuRequested.connect(self._show_file_context_menu)
+
+        recent_column.addWidget(self.recent_file_list)
+        
+        file_layout.addLayout(file_column, stretch=1)
+        file_layout.addLayout(recent_column, stretch=1)
+        
+        layout.addLayout(file_layout)
+
+    
+        # Populate UI
+        self._browser_populate_top()
+        self._populate_recent_files()
+    
+        # Restore last selected path
+        saved = self.settings.value("browser/selected_path", "")
+        if saved and os.path.isdir(saved):
+            QtCore.QTimer.singleShot(100, lambda p=saved: self._browser_restore_from_path(p))
+    
+        return page
+    
+    def _show_file_context_menu(self, position):
+        selected_items = self.browser_file_list.selectedItems()
+        if not selected_items:
+            return
+    
+        menu = QtWidgets.QMenu()
+        open_action = menu.addAction("Open")
+        import_action = menu.addAction("Import")
+        import_camera_action = menu.addAction("Import Camera")
+        delete_action = menu.addAction("Delete")
+    
+        action = menu.exec_(self.browser_file_list.viewport().mapToGlobal(position))
+    
+        if not action:
+            return
+    
+        current_dir = self.browser_path_display.text().strip()
+        files = [os.path.join(current_dir, item.text()) for item in selected_items]
+    
+        if action == open_action:
+            # Only open if exactly one file selected, and it's .hip
+            if len(files) == 1:
+                self._open_hip_file(files[0])
+            else:
+                QMessageBox.information(self, "Open File", "Please select exactly one .hip file to open.")
+        elif action == import_action:
+            self._import_files(files)
+        elif action == import_camera_action:
+            # For import camera, we expect multiple .abc files, filter only those
+            abc_files = [f for f in files if f.lower().endswith(".abc")]
+            if abc_files:
+                self._import_cameras(abc_files)
+            else:
+                QMessageBox.information(self, "Import Camera", "No .abc files selected for importing as camera.")
+
+        elif action == delete_action:
+            self._delete_files(files)
+
+    def _open_hip_file(self, path):
+        if os.path.isfile(path) and path.lower().endswith(".hip"):
+            try:
+                hou.hipFile.load(path.replace('\\', '/'))
+                self._add_to_recent(path)
+            except Exception as e:
+                print("Error loading hip file:", e)
+                hou.ui.displayMessage(f"Error loading file:\n{e}")
+        else:
+            QMessageBox.warning(self, "Invalid File", "Only .hip files can be opened.")
+            
+    def _import_files(self, file_list):
+        obj = hou.node("/obj")
+        for path in file_list:
+            if not os.path.isfile(path):
+                continue
+    
+            filename = os.path.basename(path)
+            name_no_ext = os.path.splitext(filename)[0]
+            ext = os.path.splitext(filename)[1].lower()
+            safe_name = self._sanitize_node_name(name_no_ext)
+    
+            try:
+                geo_node = obj.createNode("geo", node_name=safe_name, run_init_scripts=False, force_valid_node_name=True)
+    
+                if ext == ".abc":
+                    alembic_node = geo_node.createNode("alembic", node_name=safe_name)
+                    alembic_node.parm("fileName").set(path.replace('\\', '/'))
+                else:
+                    file_node = geo_node.createNode("file", node_name="file1")
+                    file_node.parm("file").set(path.replace('\\', '/'))
+    
+                geo_node.layoutChildren()
+                self._add_to_recent(path)
+    
+            except Exception as e:
+                print(f"Import error for {path}:", e)
+                hou.ui.displayMessage(f"Failed to import file:\n{path}\n\n{e}")
+    
+    def _import_cameras(self, file_list):
+        """Import one or more Alembic (.abc) camera files into /obj."""
+        for path in file_list:
+            if not os.path.isfile(path) or not path.lower().endswith(".abc"):
+                QMessageBox.warning(
+                    self,
+                    "Invalid File",
+                    f"Only .abc files can be imported as cameras:\n{path}"
+                )
+                continue
+    
+            name_no_ext = os.path.splitext(os.path.basename(path))[0]
+            safe_name = self._sanitize_node_name(name_no_ext)
+    
+            try:
+                obj = hou.node("/obj")
+                archive_node = obj.createNode(
+                    "alembicarchive",
+                    node_name=safe_name,
+                    run_init_scripts=False,
+                    force_valid_node_name=True
+                )
+                archive_node.parm("fileName").set(path.replace('\\', '/'))
+                archive_node.parm("buildHierarchy").pressButton()
+                archive_node.layoutChildren()
+                self._add_to_recent(path)
+    
+            except Exception as e:
+                print(f"Import camera error for {path}:", e)
+                hou.ui.displayMessage(
+                    f"Failed to import camera:\n{path}\n\n{e}"
+                )
+    
+
+    
+    def _delete_files(self, file_list):
+        confirm = QMessageBox.question(
+            self,
+            "Delete Files",
+            f"Are you sure you want to delete these files?\n" + "\n".join(file_list),
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if confirm == QMessageBox.Yes:
+            for path in file_list:
+                try:
+                    os.remove(path)
+                except Exception as e:
+                    QMessageBox.critical(self, "Delete Failed", f"Could not delete file {path}:\n{e}")
+            self._browser_populate_files(self.browser_path_display.text().strip())
+
+
+    def _save_versioned_hip(self):
+        shot = self.browser_combos[4].currentText().strip()
+        task = self.browser_combos[5].currentText().strip()
+        base_path = self.browser_path_display.text().strip()
+
+        if not shot or not task:
+            QMessageBox.warning(self, "Missing Info", "Please select both Shot No and Task.")
+            return
+
+        if not os.path.isdir(base_path):
+            QMessageBox.warning(self, "Invalid Path", "Target directory is invalid.")
+            return
+
+        base_name = f"{shot}_{task}"
+        existing = [f for f in os.listdir(base_path) if re.match(rf"{re.escape(base_name)}_v\d{{3}}\.hip", f)]
+
+        version = 1
+        if existing:
+            versions = [int(re.search(r"_v(\d{3})\.hip", f).group(1)) for f in existing]
+            version = max(versions) + 1
+
+        filename = f"{base_name}_v{version:03d}.hip"
+        full_path = os.path.join(base_path, filename)
+
+        try:
+            hou.hipFile.save(full_path.replace('\\', '/'))
+            QMessageBox.information(self, "Saved", f"Scene saved as:\n{filename}")
+            self._add_to_recent(full_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save file:\n{e}")
+        
+        
+    def _browser_browse_base_path(self):
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Select Base Path", self.base_path_edit.text())
+        if folder:
+            self.base_path_edit.setText(folder)
+            self.base_sp_path = folder
+            self.settings.setValue("browser/base_path", folder)
+            self.settings.sync()
+            self._browser_populate_top()
+
+    def _browser_go_back(self):
+        current_path = self.browser_path_display.text().strip()
+        if not current_path:
+            return
+        parent_path = os.path.dirname(current_path)
+        if os.path.isdir(parent_path):
+            self.browser_path_display.setText(parent_path)
+            self._browser_populate_files(parent_path)
+
+    def _browser_populate_top(self):
+        base = self.base_path_edit.text().strip()
+        try:
+            if os.path.isdir(base):
+                items = sorted([d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))])
+                cb = self.browser_combos[0]
+                cb.clear()
+                cb.addItem("")
+                for it in items:
+                    cb.addItem(it)
+                for i in range(1, 6):
+                    self.browser_combos[i].clear()
+                self.browser_path_display.setText(base)
+        except Exception as e:
+            print("Browser top populate error:", e)
+
+    def _browser_combo_changed(self, idx, text=None):
+        try:
+            base_path = self.base_path_edit.text().strip()
+            if not base_path or not os.path.isdir(base_path):
+                return
+
+            parts = []
+            for i in range(0, idx + 1):
+                txt = self.browser_combos[i].currentText().strip()
+                if txt:
+                    parts.append(txt)
+                else:
+                    break
+
+            path = os.path.join(base_path, *parts) if parts else base_path
+            path = os.path.normpath(path)
+
+            next_idx = idx + 1
+            if next_idx < len(self.browser_combos):
+                cb = self.browser_combos[next_idx]
+                cb.clear()
+                if os.path.isdir(path):
+                    items = sorted([d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))])
+                    cb.addItem("")
+                    cb.addItems(items)
+
+            deepest_parts = []
+            for i in range(len(self.browser_combos)):
+                t = self.browser_combos[i].currentText().strip()
+                if t:
+                    deepest_parts.append(t)
+                else:
+                    break
+
+            final_path = os.path.join(base_path, *deepest_parts) if deepest_parts else base_path
+            final_path = os.path.normpath(final_path)
+            self.browser_path_display.setText(final_path)
+            self._browser_populate_files(final_path)
+
+        except Exception as e:
+            print("browser combo change error:", e)
+
+    def _browser_populate_files(self, path):
+        style = QtWidgets.QApplication.style()  # â fix
+    
+        self.browser_file_list.clear()
+        try:
+            if os.path.isdir(path):
+                back_item = QtWidgets.QListWidgetItem("â¬ï¸  Back")
+                back_item.setData(QtCore.Qt.UserRole, "__back__")
+                font = back_item.font()
+                font.setBold(True)
+                back_item.setFont(font)
+                self.browser_file_list.addItem(back_item)
+        
+                # Add normal entries
+                entries = sorted(os.listdir(path))
+                for e in entries:
+                    full_path = os.path.join(path, e)
+                    item = QtWidgets.QListWidgetItem(e)
+    
+                    if os.path.isdir(full_path):
+                        item.setIcon(style.standardIcon(QStyle.SP_DirIcon))
+                    elif e.lower().endswith(".hip") and os.path.exists(HIP_ICON_PATH):
+                        item.setIcon(QtGui.QIcon(HIP_ICON_PATH))
+                    else:
+                        item.setIcon(style.standardIcon(QStyle.SP_FileIcon))
+    
+                    self.browser_file_list.addItem(item)
+    
+        except Exception as e:
+            print("browser populate files error:", e)
+
+
+    def _browser_path_entered(self):
+        path = self.browser_path_display.text().strip()
+        if os.path.isdir(path):
+            self._browser_populate_files(path)
+        elif os.path.isfile(path):
+            fake_item = QtWidgets.QListWidgetItem(os.path.basename(path))
+            self.browser_path_display.setText(os.path.dirname(path))
+            self._browser_file_double_clicked(fake_item)
+        else:
+            QMessageBox.warning(self, "Invalid Path", "The entered path does not exist.")
+
+    def _browser_save_selection(self):
+        path = self.browser_path_display.text().strip()
+        if not path:
+            return
+        if not os.path.isdir(path):
+            QMessageBox.warning(self, "Invalid Path", "Selected path does not exist.")
+            return
+        self.settings.setValue("browser/selected_path", path)
+        self.settings.sync()
+        QMessageBox.information(self, "Saved", f"Path saved:\n{path}")
+
+    def _browser_open_selected(self):
+        path = self.browser_path_display.text().strip()
+        if path and os.path.isdir(path):
+            if os.name == 'nt':
+                os.startfile(path)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', path])
+            else:
+                subprocess.Popen(['xdg-open', path])
+        else:
+            QMessageBox.warning(self, "Not Found", "Selected path not found.")
+
+    def _browser_restore_from_path(self, fullpath):
+        try:
+            fullpath = os.path.normpath(fullpath)
+            base = os.path.normpath(self.base_sp_path)
+            if not fullpath.startswith(base):
+                return
+            rel = os.path.relpath(fullpath, base)
+            parts = rel.split(os.sep)
+            for i, p in enumerate(parts):
+                if i > 5:
+                    break
+                cb = self.browser_combos[i]
+                if cb.count() == 0 and i == 0:
+                    self._browser_populate_top()
+                idx = cb.findText(p)
+                if idx >= 0:
+                    cb.setCurrentIndex(idx)
+            self.browser_path_display.setText(fullpath)
+            self._browser_populate_files(fullpath)
+        except Exception as e:
+            print("browser restore error:", e)
+
+    def _sanitize_node_name(self, name):
+        name = re.sub(r'\W', '_', name)
+        if not re.match(r'^[A-Za-z_]', name):
+            name = '_' + name
+        return name
+
+    def _browser_file_double_clicked(self, item):
+        # Check if it's the special back arrow entry
+        if item.data(QtCore.Qt.UserRole) == "__back__":
+            self._browser_go_back()
+            return
+    
+        current_dir = self.browser_path_display.text().strip()
+        filename = item.text()
+        full_path = os.path.abspath(os.path.join(current_dir, filename))
+    
+        if os.path.isdir(full_path):
+            self.browser_path_display.setText(full_path)
+            self._browser_populate_files(full_path)
+            return
+    
+        ext = os.path.splitext(full_path)[1].lower()
+        name_no_ext = os.path.splitext(filename)[0]
+        safe_name = self._sanitize_node_name(name_no_ext)
+    
+        try:
+            if ext == ".hip":
+                hou.hipFile.load(full_path.replace('\\', '/'))
+            elif ext == ".abc":
+                obj = hou.node("/obj")
+                geo_node = obj.createNode("geo", node_name=safe_name,
+                                          run_init_scripts=False, force_valid_node_name=True)
+                alembic_node = geo_node.createNode("alembic", node_name=safe_name)
+                alembic_node.parm("fileName").set(full_path.replace('\\', '/'))
+                geo_node.layoutChildren()
+            else:
+                obj = hou.node("/obj")
+                geo_node = obj.createNode("geo", node_name=safe_name,
+                                          run_init_scripts=False, force_valid_node_name=True)
+                file_node = geo_node.createNode("file", node_name="file1")
+                file_node.parm("file").set(full_path.replace('\\', '/'))
+                geo_node.layoutChildren()
+    
+            self._add_to_recent(full_path)
+    
+        except Exception as e:
+            print(f"Error opening file: {e}")
+            try:
+                hou.ui.displayMessage(f"Error opening file:\n{e}")
+            except:
+                pass
+
+
+    def _add_to_recent(self, filepath):
+        filepath = os.path.normpath(filepath)
+        if filepath in self.recent_files:
+            self.recent_files.remove(filepath)
+        self.recent_files.insert(0, filepath)
+        if len(self.recent_files) > self.MAX_RECENT:
+            self.recent_files = self.recent_files[:self.MAX_RECENT]
+        self.settings.setValue("browser/recent_files", self.recent_files)
+        self.settings.sync()
+        self._populate_recent_files()
+
+    def _populate_recent_files(self):
+        self.recent_file_list.clear()
+        for f in self.recent_files:
+            if os.path.exists(f) and f.lower().endswith(".hip"):
+                self.recent_file_list.addItem(f)
+
+    def _recent_file_double_clicked(self, item):
+        full_path = item.text()
+        if os.path.exists(full_path):
+            ext = os.path.splitext(full_path)[1].lower()
+            name_no_ext = os.path.splitext(os.path.basename(full_path))[0]
+            safe_name = self._sanitize_node_name(name_no_ext)
+            try:
+                if ext == ".hip":
+                    hou.hipFile.load(full_path.replace('\\', '/'))
+                elif ext == ".abc":
+                    obj = hou.node("/obj")
+                    geo_node = obj.createNode("geo", node_name=safe_name, run_init_scripts=False, force_valid_node_name=True)
+                    alembic_node = geo_node.createNode("alembic", node_name=safe_name)
+                    alembic_node.parm("fileName").set(full_path.replace('\\', '/'))
+                    geo_node.layoutChildren()
+                else:
+                    obj = hou.node("/obj")
+                    geo_node = obj.createNode("geo", node_name=safe_name, run_init_scripts=False, force_valid_node_name=True)
+                    file_node = geo_node.createNode("file", node_name="file1")
+                    file_node.parm("file").set(full_path.replace('\\', '/'))
+                    geo_node.layoutChildren()
+
+                self.browser_path_display.setText(os.path.dirname(full_path))
+                self._browser_populate_files(os.path.dirname(full_path))
+                self._add_to_recent(full_path)
+
+            except Exception as e:
+                print(f"Error opening recent file: {e}")
+                try:
+                    hou.ui.displayMessage(f"Error opening file:\n{e}")
+                except:
+                    pass
+        else:
+            QMessageBox.warning(self, "File Not Found", "The recent file no longer exists.")
+            if full_path in self.recent_files:
+                self.recent_files.remove(full_path)
+                self.settings.setValue("browser/recent_files", self.recent_files)
+                self.settings.sync()
+            self._populate_recent_files()
+
+def show_browser_tool():
+    try:
+        if hasattr(hou.session, "browser_tool_ui"):
+            old_win = hou.session.browser_tool_ui
+            if old_win is not None:
+                if old_win.isVisible():
+                    old_win.raise_()
+                    old_win.activateWindow()
+                    return
+                else:
+                    hou.session.browser_tool_ui = None
+
+        main_window = hou.ui.mainQtWindow()
+        tool = BrowserTool()
+
+        # --- Dark theme stylesheet ---
+        DARK_STYLE = """
+        QWidget {
+            background-color: #1e1e1e;  /* Dark grey background */
+            color: #FFFFFF;             /* White text */
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 12px;             /* Font size 8 pixels */
+        }
+        QLineEdit, QComboBox, QListWidget {
+        background-color: #2c2c2c;  /* Slightly lighter dark grey for list */
+        border: none;
+        border-radius: 4px;
+        outline: none;
+        }
+        QLineEdit:focus, QComboBox:focus, QListWidget:focus {
+            border: 1px solid #00aaff;
+        }
+        QPushButton {
+        background-color: #bfbfbf;  /* Light gray button bg */
+        color: #1e1e1e;             /* Dark text on button */
+        padding: 1px 1px;          /* Smaller padding */
+        border-radius: 4px;         /* Rounded corners with 4px radius */
+        font-weight: 400;
+        min-width: 40px;            /* Reduced minimum width */
+        transition: background-color 0.2s ease, color 0.2s ease;
+        }
+        QPushButton:hover {
+            background-color: #555555;
+        }
+        QPushButton:pressed {
+            background-color: #222222;
+        }
+        QListWidget::item:selected {
+            background-color: #005f87;
+            color: #ffffff;
+        }
+        QScrollBar:vertical {
+            background: #2b2b2b;
+            width: 12px;
+        }
+        QScrollBar::handle:vertical {
+            background: #555555;
+            min-height: 20px;
+            border-radius: 4px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: #888888;
+        }
+        """
+
+        # --- Main window setup ---
+        win = QtWidgets.QDialog(parent=main_window)
+        win.setWindowTitle("Houdini Browser Tool")
+        win.setMinimumSize(900, 550)
+        win.setStyleSheet(DARK_STYLE)  # Apply dark theme
+
+        stacked_layout = QtWidgets.QStackedLayout()
+        container = QtWidgets.QWidget()
+        container.setLayout(stacked_layout)
+        win.setLayout(QtWidgets.QVBoxLayout())
+        win.layout().addWidget(container)
+
+        # Main browser page
+        main_page = tool.create_browser_page()
+        stacked_layout.addWidget(main_page)
+
+        # --- Floating Save Button ---
+        save_btn = QtWidgets.QPushButton("ð¾ ")
+        save_btn.setParent(container)
+        save_btn.setToolTip("Save Hip File")
+        save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #bfbfbf;  /* Light gray button bg */
+                color: #1e1e1e; 
+                font-weight: bold;
+                border-radius: 20px;
+                padding: 0px;
+                border: 0px solid rgba(255, 255, 255, 0);
+            }
+            QPushButton:hover {
+                background-color: rgba(76, 175, 80, 0.9);
+            }
+        """)
+        save_btn.resize(40, 40)
+        save_btn.clicked.connect(tool._save_versioned_hip)
+
+        def reposition_button():
+            parent_size = container.size()
+            btn_width, btn_height = save_btn.size().width(), save_btn.size().height()
+            save_btn.move(parent_size.width() - btn_width - 20, parent_size.height() - btn_height - 20)
+
+        container.resizeEvent = lambda event: reposition_button()
+
+        # --- Highlight back item in dark theme ---
+        def update_back_item():
+            for i in range(tool.browser_file_list.count()):
+                item = tool.browser_file_list.item(i)
+                if item.data(QtCore.Qt.UserRole) == "__back__":
+                    item.setBackground(QtGui.QColor("#444444"))
+                    item.setForeground(QtGui.QColor("#ffffff"))
+        QtCore.QTimer.singleShot(200, update_back_item)
+
+        win.show()
+        hou.session.browser_tool_ui = win
+
+    except Exception as e:
+        print("Failed to open browser tool:", e)
+
+
+
+# Run it
+show_browser_tool()
+]]></script>
+  </tool>
+
+  <tool name="SaveFile++" label="SaveFile++" icon="$PIXELLAB/icons/save++.png">
+    <script scriptType="python"><![CDATA[import os
+import re
+import hou
+
+def save_incremental_hip():
+    # Get current hip file path
+    current_path = hou.hipFile.path()
+
+    # If file hasn't been saved yet, start at v001
+    if current_path == "untitled.hip":
+        default_dir = hou.getenv("HIP")
+        new_path = os.path.join(default_dir, "untitled_v001.hip")
+        hou.hipFile.save(new_path)
+        print(f"File saved as {new_path}")
+        return
+
+    dir_path = os.path.dirname(current_path)
+    base_name = os.path.basename(current_path)
+
+    # Look for v### pattern in file name
+    match = re.search(r"(v)(\d{3})(?=\.hip)", base_name, re.IGNORECASE)
+    if match:
+        # Increment version
+        prefix = match.group(1)
+        version_num = int(match.group(2)) + 1
+        new_base = re.sub(r"(v)(\d{3})(?=\.hip)",
+                          f"{prefix}{version_num:03d}", base_name)
+    else:
+        # If no version found, start at v001
+        name, ext = os.path.splitext(base_name)
+        new_base = f"{name}_v001{ext}"
+
+    new_path = os.path.join(dir_path, new_base)
+
+    # Save the hip file
+    hou.hipFile.save(new_path.replace("\\", "/"))
+    print(f"File saved as {new_path}")
+
+# Run the function
+save_incremental_hip()
+]]></script>
+  </tool>
+
+  <tool name="ViewportFlipbook0" label="ViewportFlipbook" icon="$PIXELLAB/icons/ViewportFlipbook.png">
+    <script scriptType="python"><![CDATA[import hou
+import os
+import re
+import sys
+import subprocess
+import toolutils
+from PySide2 import QtWidgets, QtCore
+
+
+# --------- Utilities --------- #
+
+def get_ffmpeg_bin():
+    pixellab = os.getenv("PIXELLAB")
+    if not pixellab:
+        raise hou.Error("PIXELLAB environment variable not set.")
+    ffmpeg = os.path.join(pixellab, "ffmpeg", "bin", "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    if not os.path.exists(ffmpeg):
+        raise hou.Error(f"FFmpeg not found:\n{ffmpeg}")
+    return ffmpeg
+
+
+def find_next_version(base_folder):
+    if not os.path.exists(base_folder):
+        return "V001"
+    versions = [v for v in os.listdir(base_folder) if re.match(r"V\d{3}", v)]
+    if not versions:
+        return "V001"
+    versions.sort()
+    last = versions[-1]
+    next_num = int(last[1:]) + 1
+    return f"V{next_num:03}"
+
+
+# --------- Dialog --------- #
+
+class FlipbookDialog(QtWidgets.QDialog):
+    def __init__(self, start="1001", end="1100", version="V001", parent=None):
+        super(FlipbookDialog, self).__init__(parent)
+        self.setWindowTitle("Viewport Flipbook Settings")
+        self.setFixedWidth(300)
+
+        layout = QtWidgets.QFormLayout(self)
+
+        self.start_edit = QtWidgets.QLineEdit(start)
+        self.end_edit = QtWidgets.QLineEdit(end)
+        self.version_edit = QtWidgets.QLineEdit(version)
+        self.open_checkbox = QtWidgets.QCheckBox("Open MP4 After Render")
+        self.open_checkbox.setChecked(False)
+
+        layout.addRow("Start Frame:", self.start_edit)
+        layout.addRow("End Frame:", self.end_edit)
+        layout.addRow("Version:", self.version_edit)
+        layout.addRow("", self.open_checkbox)
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        self.ok_btn = QtWidgets.QPushButton("Flipbook")
+        self.cancel_btn = QtWidgets.QPushButton("Cancel")
+        btn_layout.addWidget(self.ok_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addRow(btn_layout)
+
+        self.ok_btn.clicked.connect(self.validate_and_accept)
+        self.cancel_btn.clicked.connect(self.reject)
+
+    def validate_and_accept(self):
+        if not (self.start_edit.text().isdigit() and self.end_edit.text().isdigit()):
+            QtWidgets.QMessageBox.warning(self, "Invalid Input", "Start and End must be integers.")
+            return
+        if not self.version_edit.text().strip():
+            QtWidgets.QMessageBox.warning(self, "Invalid Input", "Version cannot be empty.")
+            return
+        self.accept()
+
+    def get_values(self):
+        return (
+            int(self.start_edit.text()),
+            int(self.end_edit.text()),
+            self.version_edit.text().strip(),
+            self.open_checkbox.isChecked()
+        )
+
+
+# --------- Main --------- #
+
+def main():
+    # Prepare context
+    hipfile = hou.hipFile.path()
+    if not hipfile:
+        raise hou.Error("Please save your scene before flipbooking.")
+    hip_name = os.path.splitext(os.path.basename(hipfile))[0]
+    hip_dir = os.path.dirname(hipfile)
+    flipbook_dir = os.path.join(hip_dir, "Flipbooks")
+    version_guess = find_next_version(flipbook_dir)
+
+    start, end = hou.playbar.frameRange()
+    default_start = str(int(start))
+    default_end = str(int(end))
+
+    # Create dialog
+    app = QtWidgets.QApplication.instance()
+    if not app:
+        app = QtWidgets.QApplication([])  # Only needed outside Houdini
+
+    dialog = FlipbookDialog(start=default_start, end=default_end, version=version_guess)
+    if not dialog.exec_():
+        return  # Cancelled
+
+    start_frame, end_frame, version_str, open_after = dialog.get_values()
+
+    # Scene Viewer & Camera
+    viewer = toolutils.sceneViewer()
+    viewport = viewer.curViewport()
+    camera = viewport.camera()
+    if not camera:
+        raise hou.Error("Please lock a camera to the viewport.")
+
+    resx = int(camera.parm("resx").eval())
+    resy = int(camera.parm("resy").eval())
+
+    # Setup output
+    version_folder = os.path.join(flipbook_dir, version_str)
+    os.makedirs(version_folder, exist_ok=True)
+    image_pattern = os.path.join(version_folder, f"{hip_name}_{version_str}.$F4.exr")
+
+    # Flipbook settings
+    settings = viewer.flipbookSettings()
+    settings.stash()
+    settings.output(image_pattern)
+    settings.frameRange((start_frame, end_frame))
+    settings.useResolution(True)
+    settings.resolution((resx, resy))
+
+    settings.useMotionBlur(False)
+    settings.cropOutMaskOverlay(True)
+
+    viewer.flipbook(viewport, settings)
+
+    # MP4 render via ffmpeg
+    try:
+        ffmpeg = get_ffmpeg_bin()
+
+        mp4_dir = os.path.normpath(os.path.join(flipbook_dir, "mp4"))
+        os.makedirs(mp4_dir, exist_ok=True)
+
+        exr_seq = os.path.normpath(os.path.join(version_folder, f"{hip_name}_{version_str}.%04d.exr"))
+        mp4_path = os.path.normpath(os.path.join(mp4_dir, f"{hip_name}.{version_str}.mp4"))
+
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-start_number", str(start_frame),
+            "-framerate", "24",
+            "-i", exr_seq,
+            "-c:v", "libx264",
+            "-preset", "veryslow",
+            "-crf", "0",  # Lossless CRF
+            "-pix_fmt", "yuv444p",  # Full chroma (optional, if source supports it)
+            mp4_path
+        ]
+
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            raise hou.Error("FFmpeg failed:\n" + result.stderr.decode())
+
+        if open_after:
+            if sys.platform == "win32":
+                os.startfile(mp4_path)
+            elif sys.platform == "darwin":
+                subprocess.call(["open", mp4_path])
+            else:
+                subprocess.call(["xdg-open", mp4_path])
+
+    except Exception as e:
+        hou.ui.displayMessage(f"Flipbook succeeded, but MP4 creation failed:\n{e}")
+
+
+main()
+]]></script>
+  </tool>
+
+  <tool name="ViewportFlipbook" label="ViewportFlipbook" icon="$PIXELLAB/icons/ViewportFlipbook.png">
+    <script scriptType="python"><![CDATA[import hou
+import os
+import re
+import sys
+import subprocess
+import toolutils
+from PySide2 import QtWidgets, QtCore
+
+
+# --------- Utilities --------- #
+
+def get_ffmpeg_bin():
+    pixellab = os.getenv("PIXELLAB")
+    if not pixellab:
+        raise hou.Error("PIXELLAB environment variable not set.")
+    ffmpeg = os.path.join(pixellab, "ffmpeg", "bin", "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    if not os.path.exists(ffmpeg):
+        raise hou.Error(f"FFmpeg not found:\n{ffmpeg}")
+    return ffmpeg
+
+
+def find_next_version(base_folder):
+    if not os.path.exists(base_folder):
+        return "V001"
+    versions = [v for v in os.listdir(base_folder) if re.match(r"V\d{3}", v)]
+    if not versions:
+        return "V001"
+    versions.sort()
+    last = versions[-1]
+    next_num = int(last[1:]) + 1
+    return f"V{next_num:03}"
+
+
+# --------- Dialog --------- #
+
+class FlipbookDialog(QtWidgets.QDialog):
+    def __init__(self, start="1001", end="1100", version="V001", parent=None):
+        super(FlipbookDialog, self).__init__(parent)
+        self.setWindowTitle("Viewport Flipbook Settings")
+        self.setFixedWidth(300)
+
+        layout = QtWidgets.QFormLayout(self)
+
+        self.start_edit = QtWidgets.QLineEdit(start)
+        self.end_edit = QtWidgets.QLineEdit(end)
+        self.version_edit = QtWidgets.QLineEdit(version)
+        self.open_checkbox = QtWidgets.QCheckBox("Open MP4 After Render")
+        self.open_checkbox.setChecked(False)
+
+        layout.addRow("Start Frame:", self.start_edit)
+        layout.addRow("End Frame:", self.end_edit)
+        layout.addRow("Version:", self.version_edit)
+        layout.addRow("", self.open_checkbox)
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        self.ok_btn = QtWidgets.QPushButton("Flipbook")
+        self.cancel_btn = QtWidgets.QPushButton("Cancel")
+        btn_layout.addWidget(self.ok_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addRow(btn_layout)
+
+        self.ok_btn.clicked.connect(self.validate_and_accept)
+        self.cancel_btn.clicked.connect(self.reject)
+
+    def validate_and_accept(self):
+        if not (self.start_edit.text().isdigit() and self.end_edit.text().isdigit()):
+            QtWidgets.QMessageBox.warning(self, "Invalid Input", "Start and End must be integers.")
+            return
+        if not self.version_edit.text().strip():
+            QtWidgets.QMessageBox.warning(self, "Invalid Input", "Version cannot be empty.")
+            return
+        self.accept()
+
+    def get_values(self):
+        return (
+            int(self.start_edit.text()),
+            int(self.end_edit.text()),
+            self.version_edit.text().strip(),
+            self.open_checkbox.isChecked()
+        )
+
+
+# --------- Main --------- #
+
+def main():
+    # Prepare context
+    hipfile = hou.hipFile.path()
+    if not hipfile:
+        raise hou.Error("Please save your scene before flipbooking.")
+    hip_name = os.path.splitext(os.path.basename(hipfile))[0]
+    hip_dir = os.path.dirname(hipfile)
+    flipbook_dir = os.path.join(hip_dir, "Flipbooks")
+    version_guess = find_next_version(flipbook_dir)
+
+    start, end = hou.playbar.frameRange()
+    default_start = str(int(start))
+    default_end = str(int(end))
+
+    # Create dialog
+    app = QtWidgets.QApplication.instance()
+    if not app:
+        app = QtWidgets.QApplication([])  # Only needed outside Houdini
+
+    dialog = FlipbookDialog(start=default_start, end=default_end, version=version_guess)
+    if not dialog.exec_():
+        return  # Cancelled
+
+    start_frame, end_frame, version_str, open_after = dialog.get_values()
+
+    # Scene Viewer & Camera
+    viewer = toolutils.sceneViewer()
+    viewport = viewer.curViewport()
+    camera = viewport.camera()
+    if not camera:
+        raise hou.Error("Please lock a camera to the viewport.")
+
+    resx = int(camera.parm("resx").eval())
+    resy = int(camera.parm("resy").eval())
+
+    # Setup output
+    version_folder = os.path.join(flipbook_dir, version_str)
+    os.makedirs(version_folder, exist_ok=True)
+    image_pattern = os.path.join(version_folder, f"{hip_name}_{version_str}.$F4.exr")
+
+    # Flipbook settings
+    settings = viewer.flipbookSettings()
+    settings.stash()
+    settings.output(image_pattern)
+    settings.frameRange((start_frame, end_frame))
+    settings.useResolution(True)
+    settings.resolution((resx, resy))
+
+    settings.useMotionBlur(False)
+    settings.cropOutMaskOverlay(True)
+
+    viewer.flipbook(viewport, settings)
+
+    # MP4 render via ffmpeg
+    try:
+        ffmpeg = get_ffmpeg_bin()
+
+        mp4_dir = os.path.normpath(os.path.join(flipbook_dir, "mp4"))
+        os.makedirs(mp4_dir, exist_ok=True)
+
+        exr_seq = os.path.normpath(os.path.join(version_folder, f"{hip_name}_{version_str}.%04d.exr"))
+        mp4_path = os.path.normpath(os.path.join(mp4_dir, f"{hip_name}.{version_str}.mp4"))
+
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-start_number", str(start_frame),
+            "-framerate", "24",
+            "-i", exr_seq,
+            "-c:v", "libx264",
+            "-preset", "veryslow",
+            "-crf", "0",  # Lossless CRF
+            "-pix_fmt", "yuv444p",  # Full chroma (optional, if source supports it)
+            mp4_path
+        ]
+
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            raise hou.Error("FFmpeg failed:\n" + result.stderr.decode())
+
+        if open_after:
+            if sys.platform == "win32":
+                os.startfile(mp4_path)
+            elif sys.platform == "darwin":
+                subprocess.call(["open", mp4_path])
+            else:
+                subprocess.call(["xdg-open", mp4_path])
+
+    except Exception as e:
+        hou.ui.displayMessage(f"Flipbook succeeded, but MP4 creation failed:\n{e}")
+
+
+main()
+]]></script>
+  </tool>
+
+  <tool name="OpenGlFlipbook0" label="OpenGlFlipbook" icon="$PIXELLAB/icons/OpenGLFlipbook.png">
+    <script scriptType="python"><![CDATA[import hou
+import os
+import re
+import subprocess
+import sys
+from PySide2 import QtWidgets, QtCore
+
+def get_ffmpeg_bin():
+    pixellab = os.getenv("PIXELLAB")
+    if not pixellab:
+        raise hou.Error("Environment variable PIXELLAB is not set.")
+    ffmpeg = os.path.join(pixellab, "ffmpeg", "bin", "ffmpeg.exe")
+    if not os.path.exists(ffmpeg):
+        raise hou.Error(f"ffmpeg.exe not found at:\n{ffmpeg}")
+    return ffmpeg
+
+def find_next_version(base_folder):
+    if not os.path.exists(base_folder):
+        return "V001"
+    versions = [entry for entry in os.listdir(base_folder)
+                if os.path.isdir(os.path.join(base_folder, entry)) and re.match(r"V\d{3}", entry)]
+    if not versions:
+        return "V001"
+    versions.sort()
+    last_version = versions[-1]
+    next_version_number = int(last_version[1:]) + 1
+    return f"V{next_version_number:03}"
+
+class FlipbookDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, start="1001", end="1100", version="V001"):
+        super().__init__(parent)
+        self.setWindowTitle("Flipbook Parameters")
+        self.setFixedWidth(300)
+
+        form_layout = QtWidgets.QFormLayout(self)
+
+        self.start_edit = QtWidgets.QLineEdit(start)
+        self.end_edit = QtWidgets.QLineEdit(end)
+        self.version_edit = QtWidgets.QLineEdit(version)
+        self.open_checkbox = QtWidgets.QCheckBox("Open MP4 after render")
+        self.open_checkbox.setChecked(False)  # Default to OFF
+
+        form_layout.addRow("Start Frame:", self.start_edit)
+        form_layout.addRow("End Frame:", self.end_edit)
+        form_layout.addRow("Version:", self.version_edit)
+        form_layout.addRow("", self.open_checkbox)
+
+        button_layout = QtWidgets.QHBoxLayout()
+        self.flipbook_button = QtWidgets.QPushButton("Flipbook")
+        self.cancel_button = QtWidgets.QPushButton("Cancel")
+        button_layout.addWidget(self.flipbook_button)
+        button_layout.addWidget(self.cancel_button)
+
+        form_layout.addRow(button_layout)
+
+        self.flipbook_button.clicked.connect(self.validate_and_accept)
+        self.cancel_button.clicked.connect(self.reject)
+
+    def validate_and_accept(self):
+        if not self.start_edit.text().isdigit() or not self.end_edit.text().isdigit():
+            QtWidgets.QMessageBox.warning(self, "Invalid Input", "Start and End frames must be integers.")
+            return
+        if not self.version_edit.text().strip():
+            QtWidgets.QMessageBox.warning(self, "Invalid Input", "Version cannot be empty.")
+            return
+        self.accept()
+
+    def get_values(self):
+        return (
+            self.start_edit.text(),
+            self.end_edit.text(),
+            self.version_edit.text().strip(),
+            self.open_checkbox.isChecked()
+        )
+
+def open_sequence_in_mplay(first_frame_path, total_frames):
+    match = re.match(r"(.*?)(\d+)\.exr$", os.path.basename(first_frame_path))
+    if not match:
+        hou.ui.displayMessage("Invalid EXR filename format.")
+        return
+
+    prefix, frame_str = match.groups()
+    start_frame = int(frame_str)
+    end_frame = start_frame + total_frames - 1
+    padding = len(frame_str)
+
+    sequence_pattern = f"{prefix}$F{padding}.exr"
+    directory = os.path.dirname(first_frame_path)
+    full_pattern = os.path.join(directory, sequence_pattern)
+
+    mplay_path = os.path.join(hou.getenv("HFS"), "bin", "mplay")
+
+    try:
+        # Pass start, end, and step ('1') as separate arguments after '-f'
+        subprocess.Popen([mplay_path, "-f", str(start_frame), str(end_frame), "1", full_pattern])
+    except Exception as e:
+        hou.ui.displayMessage(f"Could not launch MPlay:\n{str(e)}")
+
+
+def main():
+    ffmpeg_bin = get_ffmpeg_bin()
+
+    hipfile = hou.hipFile.path()
+    hip = os.path.dirname(hipfile)
+    hip_name = os.path.splitext(os.path.basename(hipfile))[0]
+
+    base = os.path.join(hip, "Flipbooks")
+    version_guess = find_next_version(base)
+
+    start, end = hou.playbar.frameRange()
+    default_start = str(int(start))
+    default_end = str(int(end))
+
+    app = QtWidgets.QApplication.instance()
+    if not app:
+        app = QtWidgets.QApplication([])
+
+    dialog = FlipbookDialog(start=default_start, end=default_end, version=version_guess)
+    if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        return  # silently exit if user cancels
+
+    start_f_str, end_f_str, user_version, open_after = dialog.get_values()
+    start_f = int(start_f_str)
+    end_f = int(end_f_str)
+
+    exr_folder = os.path.join(base, user_version)
+    os.makedirs(exr_folder, exist_ok=True)
+
+    viewer = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
+    if not viewer:
+        raise hou.Error("No Scene Viewer found.")
+    viewport = viewer.curViewport()
+    camera = viewport.camera()
+    if not camera:
+        raise hou.Error("Lock a camera to the viewport before running the script.")
+
+    resx = int(camera.parm("resx").eval())
+    resy = int(camera.parm("resy").eval())
+
+    # Create temporary OpenGL ROP
+    rop = hou.node("/out").createNode("opengl", node_name="temp_flipbook")
+    exr_pattern = os.path.join(exr_folder, f"{hip_name}_{user_version}.$F4.exr")
+    rop.setParms({
+        "camera": camera.path(),
+        "trange": 1,
+        "f1": start_f,
+        "f2": end_f,
+        "f3": 1,
+        "res1": resx,
+        "res2": resy,
+        "tres": True,
+        "picture": exr_pattern,
+        "alights": "",
+        "aamode": 6,  # High quality AA
+        "usehdr": 2   # HDR setting
+    })
+
+    if camera.parm("vm_background"):
+        bg_image = camera.parm("vm_background").unexpandedString()
+        if bg_image:
+            rop.parm("bgimage").set(bg_image)
+    if rop.parm("soho_initsim"):
+        rop.parm("soho_initsim").set(True)
+
+    rop.parm("execute").pressButton()
+    rop.destroy()
+
+    mp4_dir = os.path.join(base, "mp4")
+    os.makedirs(mp4_dir, exist_ok=True)
+    mp4_path = os.path.join(mp4_dir, f"{hip_name}.{user_version}.mp4")
+    exr_input_pattern = os.path.join(exr_folder, f"{hip_name}_{user_version}.%04d.exr")
+
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-start_number", str(start_f),
+        "-framerate", "24",
+        "-i", exr_input_pattern,
+        "-c:v", "libx264",
+        "-preset", "veryslow",
+        "-crf", "0",
+        "-pix_fmt", "yuv444p",
+        mp4_path
+    ]
+
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise hou.Error("FFmpeg conversion failed:\n" + result.stderr.decode())
+
+    if open_after:
+        try:
+            if os.name == "nt":
+                os.startfile(mp4_path.replace("/", "\\"))
+            elif sys.platform == "darwin":
+                subprocess.call(["open", mp4_path])
+            else:
+                subprocess.call(["xdg-open", mp4_path])
+        except Exception as e:
+            hou.ui.displayMessage(f"Rendered but could not open MP4:\n{str(e)}")
+
+    # Open in MPlay by default
+    first_frame_path = os.path.join(exr_folder, f"{hip_name}_{user_version}.{start_f:04d}.exr")
+    open_sequence_in_mplay(first_frame_path, end_f - start_f + 1)
+
+main()
+]]></script>
+  </tool>
+
+  <tool name="OpenGlFlipbook" label="OpenGlFlipbook" icon="$PIXELLAB/icons/OpenGLFlipbook.png">
+    <script scriptType="python"><![CDATA[import hou
+import os
+import re
+import subprocess
+import sys
+from PySide2 import QtWidgets, QtCore
+
+def get_ffmpeg_bin():
+    pixellab = os.getenv("PIXELLAB")
+    if not pixellab:
+        raise hou.Error("Environment variable PIXELLAB is not set.")
+    ffmpeg = os.path.join(pixellab, "ffmpeg", "bin", "ffmpeg.exe")
+    if not os.path.exists(ffmpeg):
+        raise hou.Error(f"ffmpeg.exe not found at:\n{ffmpeg}")
+    return ffmpeg
+
+def find_next_version(base_folder):
+    if not os.path.exists(base_folder):
+        return "V001"
+    versions = [entry for entry in os.listdir(base_folder)
+                if os.path.isdir(os.path.join(base_folder, entry)) and re.match(r"V\d{3}", entry)]
+    if not versions:
+        return "V001"
+    versions.sort()
+    last_version = versions[-1]
+    next_version_number = int(last_version[1:]) + 1
+    return f"V{next_version_number:03}"
+
+class FlipbookDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, start="1001", end="1100", version="V001"):
+        super().__init__(parent)
+        self.setWindowTitle("Flipbook Parameters")
+        self.setFixedWidth(300)
+
+        form_layout = QtWidgets.QFormLayout(self)
+
+        self.start_edit = QtWidgets.QLineEdit(start)
+        self.end_edit = QtWidgets.QLineEdit(end)
+        self.version_edit = QtWidgets.QLineEdit(version)
+        self.open_checkbox = QtWidgets.QCheckBox("Open MP4 after render")
+        self.open_checkbox.setChecked(False)  # Default to OFF
+
+        form_layout.addRow("Start Frame:", self.start_edit)
+        form_layout.addRow("End Frame:", self.end_edit)
+        form_layout.addRow("Version:", self.version_edit)
+        form_layout.addRow("", self.open_checkbox)
+
+        button_layout = QtWidgets.QHBoxLayout()
+        self.flipbook_button = QtWidgets.QPushButton("Flipbook")
+        self.cancel_button = QtWidgets.QPushButton("Cancel")
+        button_layout.addWidget(self.flipbook_button)
+        button_layout.addWidget(self.cancel_button)
+
+        form_layout.addRow(button_layout)
+
+        self.flipbook_button.clicked.connect(self.validate_and_accept)
+        self.cancel_button.clicked.connect(self.reject)
+
+    def validate_and_accept(self):
+        if not self.start_edit.text().isdigit() or not self.end_edit.text().isdigit():
+            QtWidgets.QMessageBox.warning(self, "Invalid Input", "Start and End frames must be integers.")
+            return
+        if not self.version_edit.text().strip():
+            QtWidgets.QMessageBox.warning(self, "Invalid Input", "Version cannot be empty.")
+            return
+        self.accept()
+
+    def get_values(self):
+        return (
+            self.start_edit.text(),
+            self.end_edit.text(),
+            self.version_edit.text().strip(),
+            self.open_checkbox.isChecked()
+        )
+
+def open_sequence_in_mplay(first_frame_path, total_frames):
+    match = re.match(r"(.*?)(\d+)\.exr$", os.path.basename(first_frame_path))
+    if not match:
+        hou.ui.displayMessage("Invalid EXR filename format.")
+        return
+
+    prefix, frame_str = match.groups()
+    start_frame = int(frame_str)
+    end_frame = start_frame + total_frames - 1
+    padding = len(frame_str)
+
+    sequence_pattern = f"{prefix}$F{padding}.exr"
+    directory = os.path.dirname(first_frame_path)
+    full_pattern = os.path.join(directory, sequence_pattern)
+
+    mplay_path = os.path.join(hou.getenv("HFS"), "bin", "mplay")
+
+    try:
+        # Pass start, end, and step ('1') as separate arguments after '-f'
+        subprocess.Popen([mplay_path, "-f", str(start_frame), str(end_frame), "1", full_pattern])
+    except Exception as e:
+        hou.ui.displayMessage(f"Could not launch MPlay:\n{str(e)}")
+
+
+def main():
+    ffmpeg_bin = get_ffmpeg_bin()
+
+    hipfile = hou.hipFile.path()
+    hip = os.path.dirname(hipfile)
+    hip_name = os.path.splitext(os.path.basename(hipfile))[0]
+
+    base = os.path.join(hip, "Flipbooks")
+    version_guess = find_next_version(base)
+
+    start, end = hou.playbar.frameRange()
+    default_start = str(int(start))
+    default_end = str(int(end))
+
+    app = QtWidgets.QApplication.instance()
+    if not app:
+        app = QtWidgets.QApplication([])
+
+    dialog = FlipbookDialog(start=default_start, end=default_end, version=version_guess)
+    if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        return  # silently exit if user cancels
+
+    start_f_str, end_f_str, user_version, open_after = dialog.get_values()
+    start_f = int(start_f_str)
+    end_f = int(end_f_str)
+
+    exr_folder = os.path.join(base, user_version)
+    os.makedirs(exr_folder, exist_ok=True)
+
+    viewer = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
+    if not viewer:
+        raise hou.Error("No Scene Viewer found.")
+    viewport = viewer.curViewport()
+    camera = viewport.camera()
+    if not camera:
+        raise hou.Error("Lock a camera to the viewport before running the script.")
+
+    resx = int(camera.parm("resx").eval())
+    resy = int(camera.parm("resy").eval())
+
+    # Create temporary OpenGL ROP
+    rop = hou.node("/out").createNode("opengl", node_name="temp_flipbook")
+    exr_pattern = os.path.join(exr_folder, f"{hip_name}_{user_version}.$F4.exr")
+    rop.setParms({
+        "camera": camera.path(),
+        "trange": 1,
+        "f1": start_f,
+        "f2": end_f,
+        "f3": 1,
+        "res1": resx,
+        "res2": resy,
+        "tres": True,
+        "picture": exr_pattern,
+        "alights": "",
+        "aamode": 6,  # High quality AA
+        "usehdr": 2   # HDR setting
+    })
+
+    if camera.parm("vm_background"):
+        bg_image = camera.parm("vm_background").unexpandedString()
+        if bg_image:
+            rop.parm("bgimage").set(bg_image)
+    if rop.parm("soho_initsim"):
+        rop.parm("soho_initsim").set(True)
+
+    rop.parm("execute").pressButton()
+    rop.destroy()
+
+    mp4_dir = os.path.join(base, "mp4")
+    os.makedirs(mp4_dir, exist_ok=True)
+    mp4_path = os.path.join(mp4_dir, f"{hip_name}.{user_version}.mp4")
+    exr_input_pattern = os.path.join(exr_folder, f"{hip_name}_{user_version}.%04d.exr")
+
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-start_number", str(start_f),
+        "-framerate", "24",
+        "-i", exr_input_pattern,
+        "-c:v", "libx264",
+        "-preset", "veryslow",
+        "-crf", "0",
+        "-pix_fmt", "yuv444p",
+        mp4_path
+    ]
+
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise hou.Error("FFmpeg conversion failed:\n" + result.stderr.decode())
+
+    if open_after:
+        try:
+            if os.name == "nt":
+                os.startfile(mp4_path.replace("/", "\\"))
+            elif sys.platform == "darwin":
+                subprocess.call(["open", mp4_path])
+            else:
+                subprocess.call(["xdg-open", mp4_path])
+        except Exception as e:
+            hou.ui.displayMessage(f"Rendered but could not open MP4:\n{str(e)}")
+
+    # Open in MPlay by default
+    first_frame_path = os.path.join(exr_folder, f"{hip_name}_{user_version}.{start_f:04d}.exr")
+    open_sequence_in_mplay(first_frame_path, end_f - start_f + 1)
+
+main()
+]]></script>
+  </tool>
+
+  <tool name="FlipbookBrowser0" label="FlipbookBrowser" icon="$PIXELLAB/icons/flipbookbrowser.png">
+    <script scriptType="python"><![CDATA[import os
+import glob
+import subprocess
+import numpy as np
+import OpenImageIO as oiio
+from PySide2 import QtWidgets, QtGui, QtCore
+import hou
+import re
+
+# Close any previous instance
+for w in QtWidgets.QApplication.allWidgets():
+    if w.objectName() == "FlipbookImageSequenceBrowser":
+        w.close()
+
+def load_exr_thumbnail(path, size=(160, 90)):
+    img = oiio.ImageInput.open(path)
+    if not img:
+        return None
+    spec = img.spec()
+    pixels = img.read_image(format=oiio.FLOAT)
+    img.close()
+    if pixels is None:
+        return None
+
+    w, h, c = spec.width, spec.height, spec.nchannels
+    pixels = np.clip(pixels, 0.0, 1.0)
+    arr = (pixels * 255).astype(np.uint8)
+
+    if c == 3:
+        arr = arr.reshape(h, w, 3)
+        fmt = QtGui.QImage.Format_RGB888
+    elif c >= 4:
+        arr = arr.reshape(h, w, c)[:, :, :4]
+        fmt = QtGui.QImage.Format_RGBA8888
+    else:
+        return None
+
+    arr = np.ascontiguousarray(arr)
+    qimg = QtGui.QImage(arr.data, w, h, w * arr.shape[2], fmt).copy()
+    return QtGui.QPixmap.fromImage(qimg.scaled(*size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+
+from PySide2.QtGui import QPainter, QColor, QFont
+
+def add_overlay_text(pixmap, resolution, frame_range):
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.TextAntialiasing)
+
+    margin = 6
+    rect = pixmap.rect().adjusted(margin, margin, -margin, -margin)
+    text = f"{resolution[0]}x{resolution[1]}\n{frame_range[0]}-{frame_range[1]}"
+
+    painter.setPen(QColor("white"))
+    painter.setFont(QFont("Segoe UI", 6, QFont.Normal))
+    painter.drawText(rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop, text)
+    painter.end()
+    return pixmap
+
+class EXRFlipbookBrowser(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("FlipbookImageSequenceBrowser")
+        self.setWindowTitle("EXR Flipbook Browser")
+        self.setMinimumSize(900, 550)
+
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #1e1e1e;  /* Dark grey background */
+                color: #FFFFFF;             /* White text */
+                font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                font-size: 12px;             /* Font size 8 pixels */
+            }
+            QListWidget {
+                background-color: #2c2c2c;  /* Slightly lighter dark grey for list */
+                border: none;
+                border-radius: 6px;
+                outline: none;
+            }
+            QListWidget::item {
+                background-color: #3a3a3a;  /* Medium dark grey item bg */
+                margin: 6px 10px;
+                padding: 6px;
+                border-radius: 6px;
+                color: #EEE;
+            }
+            QListWidget::item:selected {
+                background-color: #FFFFFF;  /* White selection bg */
+                color: #000000;             /* Black text when selected */
+            }
+            QListWidget::item:hover {
+                background-color: #505050;  /* Lighter grey hover bg */
+                color: #FFFFFF;
+            }
+            QPushButton {
+                background-color: #bfbfbf;  /* Light gray button bg */
+                color: #1e1e1e;             /* Dark text on button */
+                padding: 8px 8px;          /* Smaller padding */
+                border-radius: 4px;         /* Rounded corners with 4px radius */
+                font-weight: 400;
+                min-width: 4px;            /* Reduced minimum width */
+                transition: background-color 0.2s ease, color 0.2s ease;
+            }
+            QPushButton:hover {
+                background-color: #FFFFFF;  /* White bg on hover */
+                color: #000000;             /* Black text on hover */
+            }
+            QPushButton:pressed {
+                background-color: #d9d9d9;  /* Slightly darker gray pressed bg */
+                color: #000000;
+            }
+        """)
+
+
+        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.setViewMode(QtWidgets.QListView.IconMode)
+        self.list_widget.setIconSize(QtCore.QSize(160, 90))
+        self.list_widget.setGridSize(QtCore.QSize(180, 130))
+        self.list_widget.setSpacing(12)
+        self.list_widget.setResizeMode(QtWidgets.QListView.Adjust)
+        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.list_widget.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self.show_context_menu)
+        self.list_widget.itemDoubleClicked.connect(self.open_in_mplay)
+
+        font = QtGui.QFont("Segoe UI", 11)
+        self.list_widget.setFont(font)
+
+        self.refresh_btn = QtWidgets.QPushButton("Refresh")
+        self.refresh_btn.setFont(font)
+        self.refresh_btn.clicked.connect(self.start_thumbnail_loading)
+
+        self.mp4_btn = QtWidgets.QPushButton("Open MP4 Folder")
+        self.mp4_btn.setFont(font)
+        self.mp4_btn.clicked.connect(self.open_mp4_folder)
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_layout.addWidget(self.refresh_btn)
+        btn_layout.addWidget(self.mp4_btn)
+        btn_layout.addStretch()
+
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.addWidget(self.list_widget)
+        main_layout.addLayout(btn_layout)
+
+        self.folders = []
+        self.thumbnail_index = 0
+        self.item_lookup = {}
+
+        self.timer = QtCore.QTimer()
+        self.timer.setInterval(50)
+        self.timer.timeout.connect(self.load_next_thumbnail)
+
+        QtCore.QTimer.singleShot(100, self.start_thumbnail_loading)
+
+    def hip_root(self):
+        return os.path.join(os.path.normpath(os.path.expandvars("$HIP")), "Flipbooks")
+
+    def start_thumbnail_loading(self):
+        self.list_widget.clear()
+        self.item_lookup.clear()
+        self.timer.stop()
+
+        root = self.hip_root()
+        if not os.path.isdir(root):
+            return
+
+        self.folders = []
+        seen_paths = set()
+
+        for name in sorted(os.listdir(root)):
+            folder_path = os.path.abspath(os.path.join(root, name))
+            if folder_path in seen_paths or not os.path.isdir(folder_path):
+                continue
+
+            exrs = sorted(glob.glob(os.path.join(folder_path, "*.exr")))
+            if not exrs:
+                continue
+
+            seen_paths.add(folder_path)
+            self.folders.append((name, folder_path, exrs))
+
+            placeholder = QtGui.QPixmap(160, 90)
+            placeholder.fill(QtGui.QColor("gray"))
+            item = QtWidgets.QListWidgetItem(QtGui.QIcon(placeholder), name)
+            item.setData(QtCore.Qt.UserRole, exrs)
+            self.list_widget.addItem(item)
+            self.item_lookup[folder_path] = item
+
+        self.thumbnail_index = 0
+        self.timer.start()
+
+    def load_next_thumbnail(self):
+        if self.thumbnail_index >= len(self.folders):
+            self.timer.stop()
+            return
+
+        name, folder_path, exrs = self.folders[self.thumbnail_index]
+        thumb = load_exr_thumbnail(exrs[0])
+        if thumb:
+            img = oiio.ImageInput.open(exrs[0])
+            spec = img.spec() if img else None
+            if img:
+                img.close()
+            resolution = (spec.width, spec.height) if spec else (0, 0)
+
+            frames = []
+            for f in exrs:
+                base = os.path.splitext(os.path.basename(f))[0]
+                m = re.search(r'(\d+)$', base)
+                if m:
+                    frames.append(int(m.group(1)))
+            if frames:
+                frame_range = (min(frames), max(frames))
+            else:
+                frame_range = (0, 0)
+
+            overlay_pixmap = add_overlay_text(thumb.copy(), resolution, frame_range)
+            self.item_lookup[folder_path].setIcon(QtGui.QIcon(overlay_pixmap))
+
+        self.thumbnail_index += 1
+
+    def show_context_menu(self, pos):
+        items = self.list_widget.selectedItems()
+        if not items:
+            return
+
+        folder_path = os.path.dirname(items[0].data(QtCore.Qt.UserRole)[0])
+
+        menu = QtWidgets.QMenu()
+        menu.addAction("Open Folder", lambda: self.open_folder(folder_path))
+        menu.addAction("Copy Path", lambda: QtWidgets.QApplication.clipboard().setText(folder_path))
+        menu.exec_(self.list_widget.viewport().mapToGlobal(pos))
+
+    def open_folder(self, path):
+        if os.name == "nt":
+            os.startfile(path)
+        else:
+            subprocess.Popen(["open", path])
+
+    def open_mp4_folder(self):
+        path = os.path.join(self.hip_root(), "mp4")
+        os.makedirs(path, exist_ok=True)
+        self.open_folder(path)
+
+    def open_in_mplay(self, item):
+        exr_sequence = item.data(QtCore.Qt.UserRole)
+        if not exr_sequence:
+            return
+
+        folder = os.path.dirname(exr_sequence[0])
+        files = sorted(os.path.basename(f) for f in exr_sequence)
+
+        pattern = re.compile(r"(.*?)(\d+)(\.[^.]+)$")
+        matches = [pattern.match(f) for f in files if pattern.match(f)]
+
+        if matches:
+            base = matches[0].group(1)
+            start = int(matches[0].group(2))
+            end = int(matches[-1].group(2))
+            ext = matches[0].group(3)
+            padding = len(matches[0].group(2))
+            sequence = os.path.join(folder, f"{base}$F{padding}{ext}")
+
+            subprocess.Popen(["mplay", "-f", str(start), str(end), "1", sequence])
+            return
+
+        subprocess.Popen(["mplay"] + exr_sequence)
+
+def launch_browser():
+    global flipbook_browser
+    flipbook_browser = EXRFlipbookBrowser()
+    flipbook_browser.show()
+
+try:
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    launch_browser()
+except Exception as e:
+    print(f"Error: {e}")
+]]></script>
+  </tool>
+
+  <tool name="FlipbookBrowser" label="FlipbookBrowser" icon="$PIXELLAB/icons/flipbookbrowser.png">
+    <script scriptType="python"><![CDATA[import os
+import glob
+import subprocess
+import numpy as np
+import OpenImageIO as oiio
+from PySide2 import QtWidgets, QtGui, QtCore
+import hou
+import re
+
+# Close any previous instance
+for w in QtWidgets.QApplication.allWidgets():
+    if w.objectName() == "FlipbookImageSequenceBrowser":
+        w.close()
+
+def load_exr_thumbnail(path, size=(160, 90)):
+    img = oiio.ImageInput.open(path)
+    if not img:
+        return None
+    spec = img.spec()
+    pixels = img.read_image(format=oiio.FLOAT)
+    img.close()
+    if pixels is None:
+        return None
+
+    w, h, c = spec.width, spec.height, spec.nchannels
+    pixels = np.clip(pixels, 0.0, 1.0)
+    arr = (pixels * 255).astype(np.uint8)
+
+    if c == 3:
+        arr = arr.reshape(h, w, 3)
+        fmt = QtGui.QImage.Format_RGB888
+    elif c >= 4:
+        arr = arr.reshape(h, w, c)[:, :, :4]
+        fmt = QtGui.QImage.Format_RGBA8888
+    else:
+        return None
+
+    arr = np.ascontiguousarray(arr)
+    qimg = QtGui.QImage(arr.data, w, h, w * arr.shape[2], fmt).copy()
+    return QtGui.QPixmap.fromImage(qimg.scaled(*size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+
+from PySide2.QtGui import QPainter, QColor, QFont
+
+def add_overlay_text(pixmap, resolution, frame_range):
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.TextAntialiasing)
+    painter.setPen(QColor("white"))
+    painter.setFont(QFont("Arial", 5, QFont.Normal))
+
+    text = f"{resolution[0]}x{resolution[1]}\n {frame_range[0]}-{frame_range[1]}"
+    rect = pixmap.rect().adjusted(5, 5, -5, -5)  # padding
+
+    painter.drawText(rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop, text)
+    painter.end()
+    return pixmap
+
+class EXRFlipbookBrowser(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("FlipbookImageSequenceBrowser")
+        self.setWindowTitle("EXR Flipbook Browser")
+        self.setMinimumSize(750, 450)
+
+        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.setViewMode(QtWidgets.QListView.IconMode)
+        self.list_widget.setIconSize(QtCore.QSize(160, 90))
+        self.list_widget.setGridSize(QtCore.QSize(180, 130))
+        self.list_widget.setResizeMode(QtWidgets.QListView.Adjust)
+        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.list_widget.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self.show_context_menu)
+        self.list_widget.itemDoubleClicked.connect(self.open_in_mplay)
+
+        self.refresh_btn = QtWidgets.QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self.start_thumbnail_loading)
+
+        self.mp4_btn = QtWidgets.QPushButton("Open MP4 Folder")
+        self.mp4_btn.clicked.connect(self.open_mp4_folder)
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_layout.addWidget(self.refresh_btn)
+        btn_layout.addWidget(self.mp4_btn)
+        btn_layout.addStretch()
+
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.addWidget(self.list_widget)
+        main_layout.addLayout(btn_layout)
+
+        self.folders = []
+        self.thumbnail_index = 0
+        self.item_lookup = {}
+
+        self.timer = QtCore.QTimer()
+        self.timer.setInterval(50)
+        self.timer.timeout.connect(self.load_next_thumbnail)
+
+        QtCore.QTimer.singleShot(100, self.start_thumbnail_loading)
+
+    def hip_root(self):
+        return os.path.join(os.path.normpath(os.path.expandvars("$HIP")), "Flipbooks")
+
+    def start_thumbnail_loading(self):
+        self.list_widget.clear()
+        self.item_lookup.clear()
+        self.timer.stop()
+
+        root = self.hip_root()
+        if not os.path.isdir(root):
+            return
+
+        self.folders = []
+        seen_paths = set()
+
+        for name in sorted(os.listdir(root)):
+            folder_path = os.path.abspath(os.path.join(root, name))
+            if folder_path in seen_paths or not os.path.isdir(folder_path):
+                continue
+
+            exrs = sorted(glob.glob(os.path.join(folder_path, "*.exr")))
+            if not exrs:
+                continue
+
+            seen_paths.add(folder_path)
+            self.folders.append((name, folder_path, exrs))
+
+            placeholder = QtGui.QPixmap(160, 90)
+            placeholder.fill(QtGui.QColor("gray"))
+            item = QtWidgets.QListWidgetItem(QtGui.QIcon(placeholder), name)
+            item.setData(QtCore.Qt.UserRole, exrs)
+            self.list_widget.addItem(item)
+            self.item_lookup[folder_path] = item
+
+        self.thumbnail_index = 0
+        self.timer.start()
+
+    def load_next_thumbnail(self):
+        if self.thumbnail_index >= len(self.folders):
+            self.timer.stop()
+            return
+
+        name, folder_path, exrs = self.folders[self.thumbnail_index]
+        thumb = load_exr_thumbnail(exrs[0])
+        if thumb:
+            # Extract resolution from EXR
+            img = oiio.ImageInput.open(exrs[0])
+            spec = img.spec() if img else None
+            if img:
+                img.close()
+            resolution = (spec.width, spec.height) if spec else (0, 0)
+
+            # Extract frame range from filenames
+            frames = []
+            for f in exrs:
+                base = os.path.splitext(os.path.basename(f))[0]
+                m = re.search(r'(\d+)$', base)
+                if m:
+                    frames.append(int(m.group(1)))
+            if frames:
+                frame_range = (min(frames), max(frames))
+            else:
+                frame_range = (0, 0)
+
+            # Overlay text on thumbnail
+            overlay_pixmap = add_overlay_text(thumb.copy(), resolution, frame_range)
+            self.item_lookup[folder_path].setIcon(QtGui.QIcon(overlay_pixmap))
+
+        self.thumbnail_index += 1
+
+    def show_context_menu(self, pos):
+        items = self.list_widget.selectedItems()
+        if not items:
+            return
+
+        folder_path = os.path.dirname(items[0].data(QtCore.Qt.UserRole)[0])
+
+        menu = QtWidgets.QMenu()
+        menu.addAction("Open Folder", lambda: self.open_folder(folder_path))
+        menu.addAction("Copy Path", lambda: QtWidgets.QApplication.clipboard().setText(folder_path))
+        menu.exec_(self.list_widget.viewport().mapToGlobal(pos))
+
+    def open_folder(self, path):
+        if os.name == "nt":
+            os.startfile(path)
+        else:
+            subprocess.Popen(["open", path])
+
+    def open_mp4_folder(self):
+        path = os.path.join(self.hip_root(), "mp4")
+        os.makedirs(path, exist_ok=True)
+        self.open_folder(path)
+
+    def open_in_mplay(self, item):
+        import re
+        exr_sequence = item.data(QtCore.Qt.UserRole)
+        if not exr_sequence:
+            return
+    
+        folder = os.path.dirname(exr_sequence[0])
+        files = sorted(os.path.basename(f) for f in exr_sequence)
+    
+        pattern = re.compile(r"(.*?)(\d+)(\.[^.]+)$")
+        matches = [pattern.match(f) for f in files if pattern.match(f)]
+    
+        if matches:
+            base = matches[0].group(1)
+            start = int(matches[0].group(2))
+            end = int(matches[-1].group(2))
+            ext = matches[0].group(3)
+            padding = len(matches[0].group(2))
+            sequence = os.path.join(folder, f"{base}$F{padding}{ext}")
+    
+            # This is your reference style call
+            subprocess.Popen(["mplay", "-f", str(start), str(end), "1", sequence])
+            return
+    
+        # fallback: open all files directly
+        subprocess.Popen(["mplay"] + exr_sequence)
+
+def launch_browser():
+    global flipbook_browser
+    flipbook_browser = EXRFlipbookBrowser()
+    flipbook_browser.show()
+
+try:
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    launch_browser()
+except Exception as e:
+    print(f"Error: {e}")
+]]></script>
+  </tool>
+
+  <tool name="CacheManager0" label="CacheManager" icon="$PIXELLAB/icons/cache.png">
+    <script scriptType="python"><![CDATA[import os
+import sys
+import shutil
+import subprocess
+from functools import partial
+import hou
+
+from PySide2 import QtWidgets, QtCore
+
+
+class CacheBrowser(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super(CacheBrowser, self).__init__(parent)
+        self.setWindowTitle("Cache Browser")
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.Tool)
+        self.resize(900, 550)
+
+        # --- Main Layout ---
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setContentsMargins(2, 2, 2, 2)
+        main_layout.setSpacing(2)
+
+        # --- Top Bar (Search + Refresh) ---
+        top_layout = QtWidgets.QHBoxLayout()
+        self.search_bar = QtWidgets.QLineEdit()
+        self.search_bar.setPlaceholderText("ð Search caches...")
+        self.search_bar.textChanged.connect(self.filter_cache_tree)
+        top_layout.addWidget(self.search_bar)
+
+        refresh_btn = QtWidgets.QPushButton("â³ Refresh")
+        refresh_btn.setFixedWidth(100)
+        refresh_btn.clicked.connect(self.populate_cache_tree)
+        top_layout.addWidget(refresh_btn)
+
+        main_layout.addLayout(top_layout)
+
+        # --- Cache Tree ---
+        self.cache_tree = QtWidgets.QTreeWidget()
+        self.cache_tree.setHeaderLabels(["Cache Name", "Date Modified", "Size"])
+        self.cache_tree.setColumnWidth(0, 350)
+        self.cache_tree.setColumnWidth(1, 180)
+        self.cache_tree.setColumnWidth(2, 120)
+        self.cache_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.cache_tree.customContextMenuRequested.connect(self.show_cache_context_menu)
+        self.cache_tree.itemDoubleClicked.connect(self.on_item_double_clicked)
+        self.cache_tree.setSortingEnabled(True)  # Enable sorting
+        main_layout.addWidget(self.cache_tree, 1)
+
+        # --- Bottom Status ---
+        bottom_layout = QtWidgets.QVBoxLayout()
+        self.status_label = QtWidgets.QLabel("Ready")
+        self.disk_summary_label = QtWidgets.QLabel("")
+        bottom_layout.addWidget(self.status_label)
+        bottom_layout.addWidget(self.disk_summary_label)
+        main_layout.addLayout(bottom_layout)
+
+        # --- Populate Initial Data ---
+        self.populate_cache_tree()
+        self.center_on_parent()
+        self.apply_dark_theme()
+
+    # -------------------------------
+    # Cache Population
+    # -------------------------------
+    def populate_cache_tree(self):
+        hip_path = hou.getenv("HIP")
+        cache_dir = os.path.join(hip_path, "Cache")
+
+        self.cache_tree.clear()
+
+        if not os.path.exists(cache_dir):
+            self.status_label.setText("No Cache directory found.")
+            self.disk_summary_label.setText("")
+            return
+
+        total_size_bytes = 0
+
+        for cache_name in os.listdir(cache_dir):
+            cache_path = os.path.join(cache_dir, cache_name)
+            if os.path.isdir(cache_path):
+                last_modified = self.get_last_modified_time(cache_path)
+                folder_size_bytes = self.get_folder_size_bytes(cache_path)
+                total_size_bytes += folder_size_bytes
+
+                parent_item = QtWidgets.QTreeWidgetItem([
+                    cache_name,
+                    last_modified,
+                    self.format_size(folder_size_bytes)
+                ])
+                self.cache_tree.addTopLevelItem(parent_item)
+
+                # Add version subfolders
+                for version in sorted(os.listdir(cache_path)):
+                    version_path = os.path.join(cache_path, version)
+                    if os.path.isdir(version_path) and version.startswith("v"):
+                        version_size_bytes = self.get_folder_size_bytes(version_path)
+                        version_item = QtWidgets.QTreeWidgetItem([
+                            version,
+                            self.get_last_modified_time(version_path),
+                            self.format_size(version_size_bytes)
+                        ])
+                        parent_item.addChild(version_item)
+
+                # Expand only if more than 1 version exists
+                if parent_item.childCount() > 1:
+                    parent_item.setExpanded(True)
+                else:
+                    parent_item.setExpanded(False)
+
+        # Update summary
+        self.status_label.setText("Cache list updated.")
+        self.update_disk_summary(cache_dir, total_size_bytes)
+
+    def get_last_modified_time(self, path):
+        try:
+            mtime = os.path.getmtime(path)
+            return QtCore.QDateTime.fromSecsSinceEpoch(int(mtime)).toString("yyyy-MM-dd hh:mm")
+        except Exception:
+            return "Unknown"
+
+    def get_folder_size_bytes(self, path):
+        total = 0
+        for root, _, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except Exception:
+                    pass
+        return total
+
+    def format_size(self, size):
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} PB"
+
+    def update_disk_summary(self, cache_dir, total_cache_size):
+        try:
+            usage = shutil.disk_usage(cache_dir)
+            free_space = usage.free
+            self.disk_summary_label.setText(
+                f"ð¦ Total Cache Size: {self.format_size(total_cache_size)} | ð¾ Free Disk Space: {self.format_size(free_space)}"
+            )
+        except Exception as e:
+            self.disk_summary_label.setText(f"Disk usage info unavailable: {e}")
+
+    # -------------------------------
+    # Search Filter
+    # -------------------------------
+    def filter_cache_tree(self, text):
+        text = text.lower()
+        for i in range(self.cache_tree.topLevelItemCount()):
+            parent = self.cache_tree.topLevelItem(i)
+            parent_visible = text in parent.text(0).lower()
+            child_visible = False
+            for j in range(parent.childCount()):
+                child = parent.child(j)
+                match = text in child.text(0).lower()
+                child.setHidden(not match)
+                if match:
+                    child_visible = True
+            parent.setHidden(not (parent_visible or child_visible))
+
+    # -------------------------------
+    # Context Menu
+    # -------------------------------
+    def show_cache_context_menu(self, pos):
+        item = self.cache_tree.itemAt(pos)
+        if not item:
+            return
+
+        menu = QtWidgets.QMenu(self)
+        path = self.get_item_path(item)
+
+        open_action = menu.addAction("ð Open Folder")
+        copy_action = menu.addAction("ð Copy Path")
+        delete_action = menu.addAction("ðï¸ Delete Cache")
+        override_action = menu.addAction("â¬ Override with Blank")
+
+        action = menu.exec_(self.cache_tree.viewport().mapToGlobal(pos))
+        if action == open_action:
+            self.open_folder(path)
+        elif action == copy_action:
+            QtWidgets.QApplication.clipboard().setText(path)
+            self.status_label.setText("Path copied to clipboard")
+        elif action == delete_action:
+            self.delete_cache_folder(path)
+        elif action == override_action:
+            self.override_with_blank(path)
+
+    def get_item_path(self, item):
+        parts = []
+        while item:
+            parts.insert(0, item.text(0).split()[0])
+            item = item.parent()
+        return os.path.join(hou.getenv("HIP"), "Cache", *parts)
+
+    # -------------------------------
+    # File Ops
+    # -------------------------------
+    def open_folder(self, path):
+        try:
+            if os.path.exists(path):
+                if sys.platform == "win32":
+                    os.startfile(path)
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", path])
+                else:
+                    subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            print(f"Open folder failed: {e}")
+
+    def delete_cache_folder(self, path):
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Delete Cache",
+            f"Are you sure you want to delete:\n{path} ?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            try:
+                shutil.rmtree(path)
+                self.populate_cache_tree()
+            except Exception as e:
+                print(f"Failed to delete cache folder {path}: {e}")
+
+    def override_with_blank(self, path):
+        try:
+            for root, _, files in os.walk(path):
+                for f in files:
+                    open(os.path.join(root, f), 'wb').close()
+            self.status_label.setText("Cache overridden with blank files.")
+        except Exception as e:
+            print(f"Failed to override cache: {e}")
+
+    # -------------------------------
+    # Extra: Double-click
+    # -------------------------------
+    def on_item_double_clicked(self, item, column):
+        path = self.get_item_path(item)
+        self.open_folder(path)
+
+    # -------------------------------
+    # Helpers
+    # -------------------------------
+    def center_on_parent(self):
+        if self.parent():
+            parent_geom = self.parent().frameGeometry()
+            self.move(parent_geom.center() - self.rect().center())
+        else:
+            screen = QtWidgets.QDesktopWidget().screenGeometry()
+            self.move(
+                (screen.width() - self.width()) // 2,
+                (screen.height() - self.height()) // 2
+            )
+
+    def apply_dark_theme(self):
+        modern_stylesheet = """
+            QWidget {
+                background-color: #1e1e1e;
+                color: #f0f0f0;
+                border-radius: 4px;
+                font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                font-size: 12px;
+            }
+            QLabel {
+                background: transparent;
+                border: none;
+                color: #aaaaaa;
+                font-size: 12px;
+                padding: 0px;
+            }
+            QLineEdit {
+                background-color: #2c2c2c;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 4px 4px;
+                color: #fff;
+            }
+            QLineEdit:focus {
+                border: 1px solid #888;
+                background-color: #333;
+            }
+            QTreeWidget {
+                background-color: #1e1e1e;
+                border: none;
+                outline: none;
+            }
+            QTreeWidget::item {
+                background-color: transparent;
+                margin: 0px 0px;
+                padding: 0px;
+                border-radius: 4px;
+                color: #ddd;
+            }
+            QTreeWidget::item:selected {
+                background-color: #3a6ea5;
+                color: #ffffff;
+            }
+            QTreeWidget::item:hover {
+                background-color: #2d2d2d;
+                color: #fff;
+            }
+            QHeaderView::section {
+                background-color: #1e1e1e;
+                color: #bbbbbb;
+                border: none;
+                border-bottom: 2px solid #333;  /* subtle line */
+                padding: 2px;
+                font-weight: 500;
+            }
+            QPushButton {
+                background-color: #bfbfbf;
+                color: #1e1e1e;    
+                padding: 6px 6px;
+                border-radius: 4px;
+                font-weight: 500;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #505050;
+            }
+            QPushButton:pressed {
+                background-color: #606060;
+            }
+        """
+        self.setStyleSheet(modern_stylesheet)
+
+
+# Keep a global reference so only one window is open
+_cache_browser_instance = None
+
+def show_cache_browser():
+    global _cache_browser_instance
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    if _cache_browser_instance is None:
+        _cache_browser_instance = CacheBrowser()
+
+    # If window is closed manually, reset instance
+    def on_close(event):
+        global _cache_browser_instance
+        _cache_browser_instance = None
+        event.accept()
+
+    _cache_browser_instance.closeEvent = on_close
+
+    _cache_browser_instance.show()
+    _cache_browser_instance.raise_()
+    _cache_browser_instance.activateWindow()
+
+    if not QtWidgets.QApplication.instance():
+        app.exec_()
+
+
+# Run
+show_cache_browser()
+]]></script>
+  </tool>
+
+  <tool name="CacheManager" label="CacheManager" icon="$PIXELLAB/icons/cache.png">
+    <script scriptType="python"><![CDATA[import os
+import re
+import shutil
+import datetime
+import hou
+from PySide2 import QtWidgets, QtCore
+
+# ---------------------------------------------------
+# Cache Browser Widget
+# ---------------------------------------------------
+class CacheBrowser(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super(CacheBrowser, self).__init__(parent)
+        self.setWindowTitle("Cache Browser")
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.Tool)  # Floating window
+        self.resize(750, 450)
+
+        # --- Main Layout ---
+        main_layout = QtWidgets.QVBoxLayout(self)
+
+        # --- Cache Tree ---
+        self.cache_tree = QtWidgets.QTreeWidget()
+        self.cache_tree.setHeaderLabels(["Cache Files", "Date Modified"])
+        self.cache_tree.setColumnWidth(0, 350)
+        self.cache_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.cache_tree.customContextMenuRequested.connect(self.show_cache_context_menu)
+        main_layout.addWidget(self.cache_tree)
+
+        # --- Refresh Button ---
+#        btn_layout = QtWidgets.QHBoxLayout()
+#        btn_layout.addStretch(1)
+#        refresh_btn = QtWidgets.QPushButton("Refresh")
+#        refresh_btn.clicked.connect(self.populate_cache_tree)
+#        btn_layout.addWidget(refresh_btn)
+#        main_layout.addLayout(btn_layout)
+
+        # --- Populate Initial Data ---
+        self.populate_cache_tree()
+        self.center_on_parent()
+
+    # ---------------------------------------------------
+    # Center on Houdini main window
+    # ---------------------------------------------------
+    def center_on_parent(self):
+        if self.parent():
+            parent_geom = self.parent().geometry()
+            x = parent_geom.x() + (parent_geom.width() - self.width()) // 2
+            y = parent_geom.y() + (parent_geom.height() - self.height()) // 2
+            self.move(x, y)
+
+    # ---------------------------------------------------
+    # Populate Tree
+    # ---------------------------------------------------
+    def populate_cache_tree(self):
+        try:
+            self.cache_tree.clear()
+            hip = hou.getenv("HIP") or ""
+            cache_root = os.path.join(hip, "Cache")
+            if not os.path.exists(cache_root):
+                return
+
+            for folder in sorted(os.listdir(cache_root)):
+                full_path = os.path.join(cache_root, folder)
+                if not os.path.isdir(full_path):
+                    continue
+
+                version_folders = [
+                    d for d in os.listdir(full_path)
+                    if os.path.isdir(os.path.join(full_path, d)) and re.match(r"v\d+", d)
+                ]
+
+                total_size = 0
+                version_items = []
+                if version_folders:
+                    for version in sorted(version_folders):
+                        version_path = os.path.join(full_path, version)
+                        size = self.get_folder_size(version_path)
+                        total_size += size
+                        version_item = QtWidgets.QTreeWidgetItem(
+                            [
+                                f"{version} - {self.human_readable_size(size)}",
+                                self.get_folder_mod_time(version_path)
+                            ]
+                        )
+                        version_item.setData(0, QtCore.Qt.UserRole, version_path.replace("\\", "/"))
+                        version_items.append(version_item)
+                else:
+                    size = self.get_folder_size(full_path)
+                    total_size += size
+
+                parent_label = f"{folder} ({self.human_readable_size(total_size)})"
+                parent_item = QtWidgets.QTreeWidgetItem(
+                    [parent_label, self.get_folder_mod_time(full_path)]
+                )
+                parent_item.setData(0, QtCore.Qt.UserRole, full_path.replace("\\", "/"))
+
+                for v in version_items:
+                    parent_item.addChild(v)
+
+                self.cache_tree.addTopLevelItem(parent_item)
+
+                # --- Auto expand if more than 1 version ---
+                if len(version_items) >= 2:
+                    QtCore.QTimer.singleShot(0, lambda item=parent_item: item.setExpanded(True))
+
+        except Exception as e:
+            print("populate_cache_tree error:", e)
+
+    # ---------------------------------------------------
+    # Context Menu
+    # ---------------------------------------------------
+    def show_cache_context_menu(self, pos):
+        item = self.cache_tree.itemAt(pos)
+        if not item:
+            return
+        full_path = item.data(0, QtCore.Qt.UserRole)
+        if full_path is None:
+            return
+        full_path = hou.expandString(full_path)
+        full_path = os.path.normpath(full_path)
+        menu = QtWidgets.QMenu()
+        menu.addAction("Open Folder", lambda: self.open_folder(full_path))
+        menu.addAction("Copy Path", lambda: QtWidgets.QApplication.clipboard().setText(full_path))
+        menu.addAction("Delete Cache", lambda: self.delete_cache_folder(full_path))
+        menu.addAction("Override with Blank", lambda: self.override_with_blank(full_path))
+        menu.exec_(self.cache_tree.viewport().mapToGlobal(pos))
+
+    # ---------------------------------------------------
+    # Actions
+    # ---------------------------------------------------
+    def open_folder(self, path):
+        try:
+            import subprocess
+            if os.path.exists(path):
+                subprocess.Popen(f'explorer "{path}"')
+        except Exception as e:
+            print(f"Open folder failed: {e}")
+
+    def delete_cache_folder(self, path):
+        try:
+            if os.path.exists(path):
+                shutil.rmtree(path)
+                self.populate_cache_tree()
+        except Exception as e:
+            print(f"Failed to delete cache folder {path}: {e}")
+
+    def override_with_blank(self, path):
+        try:
+            if os.path.exists(path):
+                for root, dirs, files in os.walk(path):
+                    for f in files:
+                        open(os.path.join(root, f), 'w').close()
+        except Exception as e:
+            print(f"Override with blank failed: {e}")
+
+    # ---------------------------------------------------
+    # Utils
+    # ---------------------------------------------------
+    def get_folder_size(self, path):
+        total = 0
+        for root, dirs, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except:
+                    pass
+        return total
+
+    def human_readable_size(self, size):
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024.0:
+                return f"{size:.2f} {unit}"
+            size /= 1024.0
+        return f"{size:.2f} PB"
+
+    def get_folder_mod_time(self, path):
+        try:
+            mod_time = os.path.getmtime(path)
+            return datetime.datetime.fromtimestamp(mod_time).strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            return ""
+
+# ---------------------------------------------------
+# Show in Houdini
+# ---------------------------------------------------
+_cache_browser_window = None
+
+def show_cache_browser():
+    """Show the cache browser as a floating window in Houdini."""
+    global _cache_browser_window
+    try:
+        if _cache_browser_window is None or not _cache_browser_window.isVisible():
+            _cache_browser_window = CacheBrowser(parent=hou.ui.mainQtWindow())
+        _cache_browser_window.show()
+        _cache_browser_window.raise_()
+    except Exception as e:
+        print(f"Error showing cache browser: {e}")
+
+# Run
+show_cache_browser()
+]]></script>
+  </tool>
+
+  <tool name="RenderViewer0" label="RenderViewer" icon="$PIXELLAB/icons/render.png">
+    <script scriptType="python"><![CDATA[import hou
+from PySide2 import QtWidgets, QtCore, QtGui
+from PySide2.QtCore import QDateTime
+import os
+import re
+import shutil
+import getpass
+import subprocess
+import sys
+
+try:
+    import OpenImageIO as oiio
+    HAS_OIIO = True
+except ImportError:
+    HAS_OIIO = False
+
+
+def get_folder_owner(path):
+    try:
+        if os.name == 'nt':
+            try:
+                import win32security
+                sd = win32security.GetFileSecurity(path, win32security.OWNER_SECURITY_INFORMATION)
+                owner_sid = sd.GetSecurityDescriptorOwner()
+                name, domain, _ = win32security.LookupAccountSid(None, owner_sid)
+                return f"{domain}\\{name}"
+            except ImportError:
+                return getpass.getuser()
+            except Exception as e:
+                print(f"Error getting Windows owner for {path}: {e}")
+                return "Unknown"
+        else:
+            import pwd
+            stat_info = os.stat(path)
+            return pwd.getpwuid(stat_info.st_uid).pw_name
+    except Exception as e:
+        print(f"Error getting owner for {path}: {e}")
+        return "Unknown"
+
+
+class RenderBrowser(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        parent = parent or hou.ui.mainQtWindow()
+        super(RenderBrowser, self).__init__(parent)
+        self.setWindowTitle("Render Browser")
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #2b2b2b;
+                color: #dddddd;
+                font-family: "Segoe UI", "Arial", sans-serif;
+                font-size: 8pt;
+            }
+            
+            QHeaderView::section {
+                background-color: #3c3c3c;
+                color: #dddddd;
+                padding: 4px;
+                border: 1px solid #444;
+            }
+        
+            QTableWidget {
+                background-color: #2b2b2b;
+                gridline-color: #555555;
+                alternate-background-color: #3a3a3a;
+            }
+        
+            QTableWidget::item:selected {
+                background-color: #505F79;
+                color: white;
+            }
+        
+            QMenu {
+                background-color: #2b2b2b;
+                color: #dddddd;
+                border: 1px solid #444444;
+            }
+        
+            QMenu::item:selected {
+                background-color: #505F79;
+            }
+        
+            QScrollBar:vertical {
+                background: #2b2b2b;
+                width: 12px;
+                margin: 0px;
+            }
+        
+            QScrollBar::handle:vertical {
+                background: #555;
+                min-height: 20px;
+                border-radius: 4px;
+            }
+        
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                background: none;
+                height: 0;
+            }
+        
+            QLabel {
+                color: #dddddd;
+            }
+        
+            QMessageBox {
+                background-color: #2b2b2b;
+            }
+        """)
+        self.resize(900, 550)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        self.render_table = QtWidgets.QTableWidget()
+        self.render_table.setColumnCount(8)
+        self.render_table.setHorizontalHeaderLabels([
+            "Preview", "Render Layer", "Frame Range", "Frame No", "Resolution",
+            "Version", "Date & Time", "User"
+        ])
+        self.render_table.horizontalHeader().setStretchLastSection(True)
+        self.render_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.render_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.render_table.verticalHeader().setVisible(False)
+        self.render_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.render_table.customContextMenuRequested.connect(self.show_render_context_menu)
+        self.render_table.cellDoubleClicked.connect(self.handle_render_double_click)
+
+        layout.addWidget(self.render_table)
+
+        QtCore.QTimer.singleShot(300, self.populate_render_table)
+
+    def generate_thumbnail(self, image_path, size=(160, 90)):
+        label = QtWidgets.QLabel()
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setStyleSheet("padding: 2px; background-color: #222222; color: gray;")
+
+        if not os.path.isfile(image_path):
+            label.setText("File not found")
+            return label
+
+        ext = os.path.splitext(image_path)[1].lower()
+        display_path = image_path
+
+        if ext == ".exr" and HAS_OIIO:
+            try:
+                import tempfile
+                buf = oiio.ImageBuf(image_path)
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                display_path = tmp.name
+                buf.write(display_path)
+            except Exception:
+                label.setText("EXR read error")
+                return label
+
+        reader = QtGui.QImageReader(display_path)
+        reader.setAutoTransform(True)
+        image = reader.read()
+
+        if image.isNull():
+            label.setText("Unsupported Format")
+        else:
+            pixmap = QtGui.QPixmap.fromImage(image)
+            scaled_pixmap = pixmap.scaled(size[0], size[1], QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+            label.setPixmap(scaled_pixmap)
+
+        if ext == ".exr" and HAS_OIIO:
+            try:
+                os.remove(display_path)
+            except:
+                pass
+
+        return label
+
+    def populate_render_table(self):
+        try:
+            self.render_table.setRowCount(0)
+            hip_dir = hou.getenv("HIP") or ""
+            render_dir = os.path.join(hip_dir, "render")
+            if not os.path.exists(render_dir):
+                return
+            version_folders = sorted([f for f in os.listdir(render_dir) if f.lower().startswith('v') and os.path.isdir(os.path.join(render_dir, f))])
+            row = 0
+            for i, version in enumerate(version_folders):
+                version_path = os.path.join(render_dir, version)
+                layer_folders = sorted(os.listdir(version_path))
+                text_color = QtGui.QColor("#FFFFFF") if i % 2 == 0 else QtGui.QColor("#FFDAB3")
+                for layer in layer_folders:
+                    layer_path = os.path.join(version_path, layer)
+                    if not os.path.isdir(layer_path):
+                        continue
+                    exr_files = [f for f in os.listdir(layer_path) if os.path.splitext(f)[1].lower() in (".exr", ".jpg", ".jpeg", ".png", ".dpx", ".tif", ".tiff")]
+                    if not exr_files:
+                        continue
+                    exr_files.sort()
+                    pattern = re.compile(r"^(.*?)(\d+)\.[^.]+$")
+                    matches = [pattern.match(f) for f in exr_files]
+                    frame_range = ""
+                    if matches and all(matches):
+                        start = int(matches[0].group(2))
+                        end = int(matches[-1].group(2))
+                        frame_range = f"{start}-{end}"
+                    else:
+                        frame_range = f"1-{len(exr_files)}"
+                    resolution = "Unknown"
+                    try:
+                        if HAS_OIIO:
+                            img = oiio.ImageInput.open(os.path.join(layer_path, exr_files[0]))
+                            if img:
+                                spec = img.spec()
+                                resolution = f"{spec.width}x{spec.height}"
+                                img.close()
+                    except Exception:
+                        resolution = "Unknown"
+
+                    modified_time = os.path.getmtime(layer_path)
+                    datetime_str = QDateTime.fromSecsSinceEpoch(int(modified_time)).toString("yyyy-MM-dd hh:mm")
+                    user = get_folder_owner(layer_path)
+                    frame_count = str(len(exr_files))
+                    self.render_table.insertRow(row)
+
+                    thumb_path = os.path.join(layer_path, exr_files[len(exr_files) // 2])
+                    thumb_label = self.generate_thumbnail(thumb_path)
+                    self.render_table.setCellWidget(row, 0, thumb_label)
+
+                    row_data = [layer, frame_range, frame_count, resolution, version, datetime_str, user]
+                    for col, data in enumerate(row_data):
+                        item = QtWidgets.QTableWidgetItem(data)
+                        item.setForeground(text_color)
+                        item.setData(QtCore.Qt.UserRole, layer_path)
+                        item.setTextAlignment(QtCore.Qt.AlignCenter)
+                        if col == 0:
+                            item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+                        self.render_table.setItem(row, col + 1, item)
+                    row += 1
+
+            min_widths = [60, 140, 140, 80, 140, 70, 140, 140]
+            for col, width in enumerate(min_widths):
+                self.render_table.setColumnWidth(col, width)
+                self.render_table.horizontalHeader().setMinimumSectionSize(50)
+
+        except Exception as e:
+            print("populate_render_table error:", e)
+
+    def show_render_context_menu(self, pos):
+        index = self.render_table.indexAt(pos)
+        if not index.isValid():
+            return
+        row = index.row()
+        item = self.render_table.item(row, 1)
+        if not item:
+            return
+        folder_path = item.data(QtCore.Qt.UserRole)
+        if not folder_path or not os.path.exists(folder_path):
+            return
+        menu = QtWidgets.QMenu()
+        menu.addAction("ð Open Folder", lambda: self.open_folder(folder_path))
+        menu.addAction("ð Copy Path", lambda: QtWidgets.QApplication.clipboard().setText(folder_path))
+        menu.addAction("ðï¸ Delete", lambda: self.delete_render_folder(row, folder_path))
+        menu.exec_(self.render_table.viewport().mapToGlobal(pos))
+
+    def handle_render_double_click(self, row, column):
+        layer_item = self.render_table.item(row, 1)
+        version_item = self.render_table.item(row, 5)
+        if not layer_item or not version_item:
+            return
+
+        folder = os.path.normpath(os.path.join(
+            os.environ.get("HIP", ""), "render", version_item.text(), layer_item.text()))
+
+        if not os.path.exists(folder):
+            QtWidgets.QMessageBox.warning(self, "Not Found", f"Folder not found:\n{folder}")
+            return
+
+        try:
+            extensions = [".exr", ".jpg", ".jpeg", ".png", ".dpx", ".tif", ".tiff"]
+            files = sorted(f for f in os.listdir(folder)
+                           if os.path.splitext(f)[1].lower() in extensions)
+
+            pattern = re.compile(r"(.*?)(\d+)\.(exr|jpg|jpeg|png|dpx|tif|tiff)$", re.IGNORECASE)
+            matches = [pattern.match(f) for f in files if pattern.match(f)]
+
+            if matches:
+                base, start = matches[0].group(1), int(matches[0].group(2))
+                end = int(matches[-1].group(2))
+                ext = matches[0].group(3).lower()
+                padding = len(matches[0].group(2))
+                sequence = os.path.join(folder, f"{base}$F{padding}.{ext}")
+                subprocess.Popen(["mplay", "-f", str(start), str(end), "1", sequence])
+                return
+
+            mp4s = [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".mp4")]
+            if mp4s:
+                if os.name == 'nt':
+                    os.startfile(mp4s[0])
+                elif sys.platform == 'darwin':
+                    subprocess.Popen(["open", mp4s[0]])
+                else:
+                    subprocess.Popen(["xdg-open", mp4s[0]])
+                return
+
+            self.open_folder(folder)
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", str(e))
+
+    def delete_render_folder(self, row, path):
+        confirm = QtWidgets.QMessageBox.question(self, "Confirm Delete", f"Are you sure you want to delete:\n{path}",
+                                                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+        if confirm == QtWidgets.QMessageBox.Yes:
+            try:
+                shutil.rmtree(path)
+                self.render_table.removeRow(row)
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Delete Failed", str(e))
+
+    def open_folder(self, folder):
+        if os.name == 'nt':
+            os.startfile(folder)
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', folder])
+        else:
+            subprocess.Popen(['xdg-open', folder])
+
+    def closeEvent(self, event):
+        try:
+            if hasattr(hou.session, "render_browser_window"):
+                hou.session.render_browser_window = None
+        except Exception:
+            pass
+        super().closeEvent(event)
+    
+
+
+# ð« Prevent duplicate window
+if hasattr(hou.session, "render_browser_window") and hou.session.render_browser_window is not None:
+    if hou.session.render_browser_window.isVisible():
+        hou.session.render_browser_window.raise_()
+        hou.session.render_browser_window.activateWindow()
+    else:
+        hou.session.render_browser_window.show()
+else:
+    hou.session.render_browser_window = RenderBrowser()
+    hou.session.render_browser_window.show()
+]]></script>
+  </tool>
+
+  <tool name="RenderViewer" label="RenderViewer" icon="$PIXELLAB/icons/render.png">
+    <script scriptType="python"><![CDATA[import hou
+from PySide2 import QtWidgets, QtCore, QtGui
+from PySide2.QtCore import QDateTime
+import os
+import re
+import shutil
+import getpass
+import subprocess
+import sys
+
+try:
+    import OpenImageIO as oiio
+    HAS_OIIO = True
+except ImportError:
+    HAS_OIIO = False
+
+
+def get_folder_owner(path):
+    try:
+        if os.name == 'nt':
+            try:
+                import win32security
+                sd = win32security.GetFileSecurity(path, win32security.OWNER_SECURITY_INFORMATION)
+                owner_sid = sd.GetSecurityDescriptorOwner()
+                name, domain, _ = win32security.LookupAccountSid(None, owner_sid)
+                return f"{domain}\\{name}"
+            except ImportError:
+                # pywin32 not installed, fallback to current user
+                return getpass.getuser()
+            except Exception as e:
+                print(f"Error getting Windows owner for {path}: {e}")
+                return "Unknown"
+        else:
+            import pwd
+            stat_info = os.stat(path)
+            return pwd.getpwuid(stat_info.st_uid).pw_name
+    except Exception as e:
+        print(f"Error getting owner for {path}: {e}")
+        return "Unknown"
+
+
+class RenderBrowser(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        parent = parent or hou.ui.mainQtWindow()
+        super(RenderBrowser, self).__init__(parent)
+        self.setWindowTitle("Render Browser")
+        self.resize(750, 450)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        self.render_table = QtWidgets.QTableWidget()
+        self.render_table.setColumnCount(8)
+        self.render_table.setHorizontalHeaderLabels([
+            "Preview", "Render Layer", "Frame Range", "Frame Count", "Resolution",
+            "Version", "Date & Time", "User"
+        ])
+        self.render_table.horizontalHeader().setStretchLastSection(True)
+        self.render_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.render_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.render_table.verticalHeader().setVisible(False)
+        self.render_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.render_table.customContextMenuRequested.connect(self.show_render_context_menu)
+        self.render_table.cellDoubleClicked.connect(self.handle_render_double_click)
+
+        layout.addWidget(self.render_table)
+
+        QtCore.QTimer.singleShot(300, self.populate_render_table)
+
+    def generate_thumbnail(self, image_path, size=(160, 90)):
+        label = QtWidgets.QLabel()
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setStyleSheet("padding: 2px; background-color: #222222; color: gray;")
+
+        if not os.path.isfile(image_path):
+            label.setText("File not found")
+            return label
+
+        ext = os.path.splitext(image_path)[1].lower()
+        display_path = image_path
+
+        if ext == ".exr" and HAS_OIIO:
+            try:
+                import tempfile
+                buf = oiio.ImageBuf(image_path)
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                display_path = tmp.name
+                buf.write(display_path)
+            except Exception as e:
+                label.setText("EXR read error")
+                return label
+
+        reader = QtGui.QImageReader(display_path)
+        reader.setAutoTransform(True)
+        image = reader.read()
+
+        if image.isNull():
+            label.setText("Unsupported Format")
+        else:
+            pixmap = QtGui.QPixmap.fromImage(image)
+            scaled_pixmap = pixmap.scaled(size[0], size[1], QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+            label.setPixmap(scaled_pixmap)
+
+        if ext == ".exr" and HAS_OIIO:
+            try:
+                os.remove(display_path)
+            except:
+                pass
+
+        return label
+
+    def populate_render_table(self):
+        try:
+            self.render_table.setRowCount(0)
+            hip_dir = hou.getenv("HIP") or ""
+            render_dir = os.path.join(hip_dir, "render")
+            if not os.path.exists(render_dir):
+                return
+            version_folders = sorted([f for f in os.listdir(render_dir) if f.lower().startswith('v') and os.path.isdir(os.path.join(render_dir, f))])
+            row = 0
+            for i, version in enumerate(version_folders):
+                version_path = os.path.join(render_dir, version)
+                layer_folders = sorted(os.listdir(version_path))
+                text_color = QtGui.QColor("#FFFFFF") if i % 2 == 0 else QtGui.QColor("#FFDAB3")
+                for layer in layer_folders:
+                    layer_path = os.path.join(version_path, layer)
+                    if not os.path.isdir(layer_path):
+                        continue
+                    exr_files = [f for f in os.listdir(layer_path) if os.path.splitext(f)[1].lower() in (".exr", ".jpg", ".jpeg", ".png", ".dpx", ".tif", ".tiff")]
+                    if not exr_files:
+                        continue
+                    exr_files.sort()
+                    pattern = re.compile(r"^(.*?)(\d+)\.[^.]+$")
+                    matches = [pattern.match(f) for f in exr_files]
+                    frame_range = ""
+                    if matches and all(matches):
+                        start = int(matches[0].group(2))
+                        end = int(matches[-1].group(2))
+                        frame_range = f"{start}-{end}"
+                    else:
+                        frame_range = f"1-{len(exr_files)}"
+                    resolution = "Unknown"
+                    try:
+                        if HAS_OIIO:
+                            img = oiio.ImageInput.open(os.path.join(layer_path, exr_files[0]))
+                            if img:
+                                spec = img.spec()
+                                resolution = f"{spec.width}x{spec.height}"
+                                img.close()
+                    except Exception:
+                        resolution = "Unknown"
+
+                    modified_time = os.path.getmtime(layer_path)
+                    datetime_str = QDateTime.fromSecsSinceEpoch(int(modified_time)).toString("yyyy-MM-dd hh:mm")
+
+                    user = get_folder_owner(layer_path)
+
+                    frame_count = str(len(exr_files))
+                    self.render_table.insertRow(row)
+
+                    # â¤ 0. Thumbnail column
+                    middle_index = len(exr_files) // 2
+                    thumb_path = os.path.join(layer_path, exr_files[middle_index])
+                    thumb_label = self.generate_thumbnail(thumb_path)
+                    self.render_table.setCellWidget(row, 0, thumb_label)
+
+                    # â¤ 1-7: Other columns
+                    row_data = [layer, frame_range, frame_count, resolution, version, datetime_str, user]
+                    for col, data in enumerate(row_data):
+                        item = QtWidgets.QTableWidgetItem(data)
+                        item.setForeground(text_color)
+                        item.setData(QtCore.Qt.UserRole, layer_path)
+                        if col == 0:
+                            item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+                        else:
+                            item.setTextAlignment(QtCore.Qt.AlignCenter)
+                        self.render_table.setItem(row, col + 1, item)  # shift by +1 due to thumbnail
+                    row += 1
+
+            # Adjust column widths including the new thumbnail size
+            min_widths = [90, 140, 140, 80, 140, 70, 140, 140]
+            for col, width in enumerate(min_widths):
+                self.render_table.setColumnWidth(col, width)
+                self.render_table.horizontalHeader().setMinimumSectionSize(50)
+
+        except Exception as e:
+            print("populate_render_table error:", e)
+
+    def show_render_context_menu(self, pos):
+        index = self.render_table.indexAt(pos)
+        if not index.isValid():
+            return
+        row = index.row()
+        item = self.render_table.item(row, 1)  # shifted index
+        if not item:
+            return
+        folder_path = item.data(QtCore.Qt.UserRole)
+        if not folder_path or not os.path.exists(folder_path):
+            return
+        menu = QtWidgets.QMenu()
+        menu.addAction("ð Open Folder", lambda: self.open_folder(folder_path))
+        menu.addAction("ð Copy Path", lambda: QtWidgets.QApplication.clipboard().setText(folder_path))
+        menu.addAction("ðï¸ Delete", lambda: self.delete_render_folder(row, folder_path))
+        menu.exec_(self.render_table.viewport().mapToGlobal(pos))
+
+    def handle_render_double_click(self, row, column):
+        layer_item = self.render_table.item(row, 1)
+        version_item = self.render_table.item(row, 5)
+        if not layer_item or not version_item:
+            return
+
+        folder = os.path.normpath(os.path.join(
+            os.environ.get("HIP", ""), "render", version_item.text(), layer_item.text()))
+
+        if not os.path.exists(folder):
+            QtWidgets.QMessageBox.warning(self, "Not Found", f"Folder not found:\n{folder}")
+            return
+
+        try:
+            extensions = [".exr", ".jpg", ".jpeg", ".png", ".dpx", ".tif", ".tiff"]
+            files = sorted(f for f in os.listdir(folder)
+                           if os.path.splitext(f)[1].lower() in extensions)
+
+            pattern = re.compile(r"(.*?)(\d+)\.(exr|jpg|jpeg|png|dpx|tif|tiff)$", re.IGNORECASE)
+            matches = [pattern.match(f) for f in files if pattern.match(f)]
+
+            if matches:
+                base, start = matches[0].group(1), int(matches[0].group(2))
+                end = int(matches[-1].group(2))
+                ext = matches[0].group(3).lower()
+                padding = len(matches[0].group(2))
+                sequence = os.path.join(folder, f"{base}$F{padding}.{ext}")
+                subprocess.Popen(["mplay", "-f", str(start), str(end), "1", sequence])
+                return
+
+            mp4s = [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".mp4")]
+            if mp4s:
+                if os.name == 'nt':
+                    os.startfile(mp4s[0])
+                elif sys.platform == 'darwin':
+                    subprocess.Popen(["open", mp4s[0]])
+                else:
+                    subprocess.Popen(["xdg-open", mp4s[0]])
+                return
+
+            self.open_folder(folder)
+
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", str(e))
+
+    def delete_render_folder(self, row, path):
+        confirm = QtWidgets.QMessageBox.question(self, "Confirm Delete", f"Are you sure you want to delete:\n{path}",
+                                                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+        if confirm == QtWidgets.QMessageBox.Yes:
+            try:
+                shutil.rmtree(path)
+                self.render_table.removeRow(row)
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Delete Failed", str(e))
+
+    def open_folder(self, folder):
+        if os.name == 'nt':
+            os.startfile(folder)
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', folder])
+        else:
+            subprocess.Popen(['xdg-open', folder])
+
+
+# Run the viewer
+render_viewer = RenderBrowser()
+render_viewer.show()
+]]></script>
+  </tool>
+
+  <tool name="DeadlineManager0" label="DeadlineManager" icon="$PIXELLAB/icons/deadline.png">
+    <script scriptType="python"><![CDATA[import os
+import re
+import platform
+import getpass
+import subprocess
+from PySide2 import QtWidgets, QtCore
+from PySide2.QtCore import QDate, QDateTime
+from PySide2.QtWidgets import QLabel
+
+# ---------------------------
+# Worker threads
+# ---------------------------
+class DeadlineJobLoader(QtCore.QThread):
+    jobs_loaded = QtCore.Signal(list)  # list of job dicts
+    error = QtCore.Signal(str)
+
+    def __init__(self, deadline_cmd, user=None, parent=None):
+        super().__init__(parent)
+        self.deadline_cmd = deadline_cmd
+        self.user = user
+
+    def run(self):
+        jobs = []
+        try:
+            args = [self.deadline_cmd, "GetJobs"]
+            if self.user:
+                args += ["-UserName", self.user]
+            result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            out = result.stdout.strip() or result.stderr.strip()
+            current_job = {}
+            for line in out.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    current_job[k.strip()] = v.strip()
+                elif not line.strip():  # blank line => job boundary
+                    if current_job:
+                        jobs.append(current_job.copy())
+                        current_job.clear()
+            if current_job:
+                jobs.append(current_job.copy())
+        except Exception as e:
+            self.error.emit(str(e))
+        finally:
+            self.jobs_loaded.emit(jobs)
+
+
+class JobInfoLoader(QtCore.QThread):
+    info_loaded = QtCore.Signal(dict)
+    error = QtCore.Signal(str)
+
+    def __init__(self, deadline_cmd, job_id, parent=None):
+        super().__init__(parent)
+        self.deadline_cmd = deadline_cmd
+        self.job_id = job_id
+
+    def run(self):
+        parsed = {}
+        try:
+            result = subprocess.run([self.deadline_cmd, "GetJob", self.job_id], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            out = result.stdout.strip() or result.stderr.strip()
+            for line in out.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    parsed[k.strip()] = v.strip()
+        except Exception as e:
+            self.error.emit(str(e))
+        finally:
+            self.info_loaded.emit(parsed)
+
+
+class CommandRunner(QtCore.QThread):
+    finished_running = QtCore.Signal(str, bool, str)  # command, success, message
+
+    def __init__(self, deadline_cmd, command, job_id, parent=None):
+        super().__init__(parent)
+        self.deadline_cmd = deadline_cmd
+        self.command = command
+        self.job_id = job_id
+
+    def run(self):
+        try:
+            result = subprocess.run([self.deadline_cmd, self.command, self.job_id], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            success = result.returncode == 0
+            msg = (result.stdout.strip() or result.stderr.strip())
+            self.finished_running.emit(self.command, success, msg)
+        except Exception as e:
+            self.finished_running.emit(self.command, False, str(e))
+
+# ---------------------------
+# Main GUI
+# ---------------------------
+class DeadlineGUI(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Deadline Jobs Viewer")
+        self.resize(900, 550)
+        self.apply_dark_theme()
+        self.jobs = []
+        self.threads = []  # keep references to threads to avoid GC
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(self.create_deadline_page())
+
+    def create_deadline_page(self):
+        left = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left)
+
+        # Filters
+        filter_layout = QtWidgets.QHBoxLayout()
+        self.search_bar = QtWidgets.QLineEdit()
+        self.search_bar.setPlaceholderText("ð Search jobs (name/user/id)...")
+        self.search_bar.textChanged.connect(self.apply_deadline_filter)
+        filter_layout.addWidget(self.search_bar)
+
+        self.user_filter = QtWidgets.QComboBox()
+        self.user_filter.setEditable(True)
+        self.user_filter.setMinimumWidth(140)
+        self.user_filter.addItem(getpass.getuser())
+        self.user_filter.setCurrentText(getpass.getuser())
+        self.user_filter.currentIndexChanged.connect(self.apply_deadline_filter)
+        filter_layout.addWidget(QLabel("User:"))
+        filter_layout.addWidget(self.user_filter)
+
+        self.date_start = QtWidgets.QDateEdit(calendarPopup=True)
+        self.date_end = QtWidgets.QDateEdit(calendarPopup=True)
+        self.date_start.setDate(QDate.currentDate().addDays(-7))
+        self.date_end.setDate(QDate.currentDate())
+        self.date_start.dateChanged.connect(self.apply_deadline_filter)
+        self.date_end.dateChanged.connect(self.apply_deadline_filter)
+        filter_layout.addWidget(QLabel("From:"))
+        filter_layout.addWidget(self.date_start)
+        filter_layout.addWidget(QLabel("To:"))
+        filter_layout.addWidget(self.date_end)
+
+        self.auto_refresh_chk = QtWidgets.QCheckBox("Auto-refresh")
+        self.auto_refresh_chk.setToolTip("Automatically refresh deadline jobs every interval")
+        self.auto_refresh_chk.stateChanged.connect(self._toggle_deadline_autorefresh)
+        filter_layout.addWidget(self.auto_refresh_chk)
+
+        self.auto_interval = QtWidgets.QSpinBox()
+        self.auto_interval.setMinimum(5)
+        self.auto_interval.setMaximum(3600)
+        self.auto_interval.setValue(20)
+        self.auto_interval.setSuffix(" s")
+        self.auto_interval.setToolTip("Auto-refresh interval (seconds)")
+        filter_layout.addWidget(self.auto_interval)
+
+        self.refresh_btn = QtWidgets.QPushButton("ð Refresh")
+        self.refresh_btn.clicked.connect(self.load_deadline_jobs)
+        filter_layout.addWidget(self.refresh_btn)
+
+        left_layout.addLayout(filter_layout)
+
+        # Job table
+        self.deadline_table = QtWidgets.QTableWidget()
+        self.deadline_table.setColumnCount(14)
+        self.deadline_table.setHorizontalHeaderLabels([
+            "Job Name", "User", "Progress", "Status", "Frames", "Pool",
+            "Priority", "Submitted", "Started", "Completed",
+            "Output Directory", "Output File", "Submitted From", "Job ID"
+        ])
+        self.deadline_table.setSortingEnabled(True)
+        self.deadline_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.deadline_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.deadline_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.deadline_table.customContextMenuRequested.connect(self.show_deadline_context_menu)
+        self.deadline_table.itemSelectionChanged.connect(self._deadline_row_selected)
+        self.deadline_table.itemDoubleClicked.connect(self._deadline_row_selected)
+        left_layout.addWidget(self.deadline_table)
+
+        # Action buttons
+        actions_row = QtWidgets.QHBoxLayout()
+        self.suspend_btn = QtWidgets.QPushButton("ð Suspend")
+        self.resume_btn = QtWidgets.QPushButton("â¶ï¸ Resume")
+        self.delete_btn = QtWidgets.QPushButton("â Delete")
+        self.suspend_btn.clicked.connect(self.suspend_selected_jobs)
+        self.resume_btn.clicked.connect(self.resume_selected_jobs)
+        self.delete_btn.clicked.connect(self.delete_selected_jobs)
+        actions_row.addWidget(self.suspend_btn)
+        actions_row.addWidget(self.resume_btn)
+        actions_row.addWidget(self.delete_btn)
+        actions_row.addStretch()
+        left_layout.addLayout(actions_row)
+
+        main = QtWidgets.QHBoxLayout()
+        main.addWidget(left)
+
+
+        page = QtWidgets.QWidget()
+        page.setLayout(main)
+
+        self._deadline_timer = QtCore.QTimer(self)
+        self._deadline_timer.timeout.connect(self.load_deadline_jobs)
+
+        return page
+
+    def apply_dark_theme(self):
+        modern_stylesheet = """
+        QWidget {
+            background-color: #2b2b2b;
+            color: #dddddd;
+            font-family: "Segoe UI", "Arial", sans-serif;
+            font-size: 8pt;
+        }
+        QLineEdit, QComboBox, QListWidget {
+        background-color: #2c2c2c;  /* Slightly lighter dark grey for list */
+        border: none;
+        border-radius: 4px;
+        outline: none;
+        }
+        QLineEdit:focus, QComboBox:focus, QListWidget:focus {
+            border: 1px solid #00aaff;
+        }
+        QPushButton {
+        background-color: #bfbfbf;  /* Light gray button bg */
+        color: #1e1e1e;             /* Dark text on button */
+        padding: 2px 2px;          /* Smaller padding */
+        border-radius: 4px;         /* Rounded corners with 4px radius */
+        font-weight: 400;
+        min-width: 80px;            /* Reduced minimum width */
+        transition: background-color 0.2s ease, color 0.2s ease;
+        }
+        QPushButton:hover {
+            background-color: #555555;
+        }
+        QPushButton:pressed {
+            background-color: #222222;
+        }
+        QListWidget::item:selected {
+            background-color: #005f87;
+            color: #ffffff;
+        }
+        QScrollBar:vertical {
+            background: #2b2b2b;
+            width: 12px;
+        }
+        QScrollBar::handle:vertical {
+            background: #555555;
+            min-height: 20px;
+            border-radius: 4px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: #888888;
+        }
+        """
+        self.setStyleSheet(modern_stylesheet)
+
+        
+    def _toggle_deadline_autorefresh(self, state):
+        if state == QtCore.Qt.Checked:
+            interval_sec = max(5, int(self.auto_interval.value()))
+            self._deadline_timer.start(interval_sec * 1000)
+        else:
+            self._deadline_timer.stop()
+
+    # ---------------------------
+    # Loading jobs (threaded)
+    # ---------------------------
+    def load_deadline_jobs(self):
+        # Avoid overlapping refreshes
+        self._deadline_timer.stop()
+        self.saved_filter_text = self.search_bar.text()
+        self.search_bar.blockSignals(True)
+        self.search_bar.clear()
+        self.deadline_table.setRowCount(0)
+        self.jobs = []
+
+        deadline_bin_dir = os.getenv("DEADLINE_PATH", r"C:\Program Files\Thinkbox\Deadline10\bin")
+        self.deadline_cmd = os.path.join(deadline_bin_dir, "deadlinecommand")
+        if platform.system() == "Windows" and not self.deadline_cmd.lower().endswith(".exe"):
+            if os.path.isfile(self.deadline_cmd + ".exe"):
+                self.deadline_cmd += ".exe"
+
+        user = self.user_filter.currentText().strip() or getpass.getuser()
+
+        # disable refresh while loading
+        self.refresh_btn.setEnabled(False)
+
+        loader = DeadlineJobLoader(self.deadline_cmd, user)
+        loader.jobs_loaded.connect(self._jobs_from_thread)
+        loader.error.connect(self._worker_error)
+        loader.finished.connect(lambda: self._thread_cleanup(loader))
+        loader.start()
+        self.threads.append(loader)
+
+    def _thread_cleanup(self, thread):
+        # keep list small, and delete finished refs
+        try:
+            self.threads = [t for t in self.threads if t.isRunning()]
+        except Exception:
+            self.threads = []
+
+    def _worker_error(self, msg):
+        # show minimal message (main thread)
+        print("Worker error:", msg)
+
+    def _jobs_from_thread(self, jobs):
+        # Called on main thread via signal
+        self.jobs = []
+        for job in jobs:
+            jobid = job.get("JobId") or job.get("Id") or job.get("ID") or ""
+            job["__parsed_jobid"] = jobid
+            job["__submit_qdate"] = self._parse_job_submit_date(job.get("JobSubmitDateTime", "") or job.get("JobSubmitDate", ""))
+            self.jobs.append(job)
+
+        # restore search text and enable refresh
+        self.search_bar.blockSignals(False)
+        try:
+            self.search_bar.setText(self.saved_filter_text)
+        finally:
+            self.refresh_btn.setEnabled(True)
+
+        self.apply_deadline_filter()
+
+        # restart auto timer if needed
+        if self.auto_refresh_chk.isChecked():
+            self._deadline_timer.start(self.auto_interval.value() * 1000)
+
+    def _parse_job_submit_date(self, val):
+        if not val:
+            return None
+        try:
+            if str(val).isdigit():
+                dt = QDateTime.fromSecsSinceEpoch(int(val))
+                return dt.date()
+            for fmt in ("yyyy-MM-dd hh:mm:ss", "yyyy-MM-ddThh:mm:ss", "yyyy-MM-dd hh:mm", "yyyy-MM-dd"):
+                dt = QDateTime.fromString(val, fmt)
+                if dt.isValid():
+                    return dt.date()
+            m = re.search(r"(\d{4}-\d{2}-\d{2})", val)
+            if m:
+                dt = QDateTime.fromString(m.group(1), "yyyy-MM-dd")
+                if dt.isValid():
+                    return dt.date()
+        except Exception:
+            pass
+        return None
+
+    # ---------------------------
+    # Table population (main thread only)
+    # ---------------------------
+    def add_deadline_job_row(self, job):
+        row = self.deadline_table.rowCount()
+        self.deadline_table.insertRow(row)
+
+        name = job.get("Name", "Unknown")
+        user = job.get("UserName", "") or job.get("User", "")
+        status = job.get("Status", "")
+        pool = job.get("Pool", "")
+        priority = str(job.get("Priority", ""))
+        job_id = job.get("__parsed_jobid", "UNKNOWN")
+        raw_frames = job.get("Frames", "")
+        frame_numbers = set()
+
+        if isinstance(raw_frames, str):
+            parts = re.split(r"[,\s]+", raw_frames.strip())
+            for p in parts:
+                if "-" in p:
+                    try:
+                        a, b = p.split("-", 1)
+                        frame_numbers.update(range(int(a), int(b) + 1))
+                    except:
+                        pass
+                elif p.isdigit():
+                    frame_numbers.add(int(p))
+
+        frame_list = sorted(frame_numbers)
+        frame_range = f"{frame_list[0]}-{frame_list[-1]}" if frame_list else ""
+
+        submit_time = job.get("JobSubmitDateTime", "")
+        started_time = job.get("JobStartedDateTime", "")
+        completed_time = job.get("JobCompletedDateTime", "")
+        output_dir = job.get("JobOutputDirectories", "")
+        output_file = job.get("JobOutputFileNames", "")
+        output_dir = output_dir[0] if isinstance(output_dir, list) and output_dir else output_dir
+        output_file = output_file[0] if isinstance(output_file, list) and output_file else output_file
+        submit_machine = job.get("JobSubmitMachine", "")
+
+        try:
+            completed = int(job.get("JobCompletedTasks", 0))
+            total = int(job.get("JobTaskCount", 1))
+            progress = int((completed / total) * 100) if total > 0 else 0
+        except:
+            progress = 0
+
+        columns = [
+            name, user, None, status, frame_range, pool,
+            priority, submit_time, started_time, completed_time,
+            output_dir, output_file, submit_machine, job_id
+        ]
+
+        for i, value in enumerate(columns):
+            if i == 2:
+                pb = QtWidgets.QProgressBar()
+                pb.setValue(progress)
+                pb.setAlignment(QtCore.Qt.AlignCenter)
+                pb.setFormat(f"{progress}%")
+                pb.setFixedHeight(16)
+                self.deadline_table.setCellWidget(row, i, pb)
+            else:
+                item = QtWidgets.QTableWidgetItem(value or "")
+                item.setTextAlignment(QtCore.Qt.AlignCenter)
+                item.setData(QtCore.Qt.UserRole, job_id)
+                self.deadline_table.setItem(row, i, item)
+
+    def apply_deadline_filter(self):
+        filter_text = self.search_bar.text().lower().strip()
+        user_filter_text = (self.user_filter.currentText() or "").lower().strip()
+        date_from = self.date_start.date()
+        date_to = self.date_end.date()
+
+        self.deadline_table.setRowCount(0)
+        for job in getattr(self, "jobs", []):
+            name = job.get("Name", "").lower()
+            user = (job.get("UserName", "") or job.get("User", "")).lower()
+            jobid = (job.get("__parsed_jobid", "") or "").lower()
+            submit_qdate = job.get("__submit_qdate", None)
+            if not submit_qdate:
+                continue
+            if not (date_from <= submit_qdate <= date_to):
+                continue
+            if user_filter_text and user_filter_text not in user:
+                continue
+            if filter_text and filter_text not in name and filter_text not in user and filter_text not in jobid:
+                continue
+            self.add_deadline_job_row(job)
+
+    def get_selected_job_ids(self):
+        selected = self.deadline_table.selectionModel().selectedRows()
+        job_ids = set()
+        for row in selected:
+            for col in range(self.deadline_table.columnCount()):
+                item = self.deadline_table.item(row.row(), col)
+                if item and item.data(QtCore.Qt.UserRole):
+                    job_ids.add(item.data(QtCore.Qt.UserRole))
+                    break
+        return list(job_ids)
+
+    def show_deadline_context_menu(self, pos):
+        index = self.deadline_table.indexAt(pos)
+        if not index.isValid():
+            return
+        self.deadline_table.selectRow(index.row())
+        job_id = self.deadline_table.item(index.row(), 0).data(QtCore.Qt.UserRole)
+        if not job_id:
+            return
+        menu = QtWidgets.QMenu()
+        menu.addAction("ð Suspend", self.suspend_selected_jobs)
+        menu.addAction("â¶ï¸ Resume", self.resume_selected_jobs)
+        menu.addAction("â Delete", self.delete_selected_jobs)
+        menu.addSeparator()
+        menu.addAction("ð View Job Info", lambda jid=job_id: self.fetch_and_show_job_info(jid))
+        menu.exec_(self.deadline_table.viewport().mapToGlobal(pos))
+
+    def _deadline_row_selected(self):
+        sels = self.deadline_table.selectionModel().selectedRows()
+        if not sels:
+            return
+        row = sels[0].row()
+        job_id = self.deadline_table.item(row, 0).data(QtCore.Qt.UserRole)
+        if job_id:
+            self.fetch_and_show_job_info(job_id)
+
+
+    # ---------------------------
+    # Job info (threaded)
+    # ---------------------------
+    def fetch_and_show_job_info(self, job_id):
+        # ensure self.deadline_cmd exists
+        if not hasattr(self, "deadline_cmd") or not self.deadline_cmd:
+            deadline_bin_dir = os.getenv("DEADLINE_PATH", r"C:\Program Files\Thinkbox\Deadline10\bin")
+            self.deadline_cmd = os.path.join(deadline_bin_dir, "deadlinecommand")
+            if platform.system() == "Windows" and os.path.isfile(self.deadline_cmd + ".exe"):
+                self.deadline_cmd += ".exe"
+
+        info_loader = JobInfoLoader(self.deadline_cmd, job_id)
+        info_loader.info_loaded.connect(self._show_job_info)
+        info_loader.error.connect(self._worker_error)
+        info_loader.finished.connect(lambda: self._thread_cleanup(info_loader))
+        info_loader.start()
+        self.threads.append(info_loader)
+
+    def _show_job_info(self, parsed):
+        # Create a modal dialog to show job info
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Job Info")
+        dialog.resize(600, 400)
+        layout = QtWidgets.QVBoxLayout(dialog)
+    
+        table = QtWidgets.QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Field", "Value"])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.verticalHeader().setVisible(False)
+    
+        for i, (k, v) in enumerate(sorted(parsed.items())):
+            table.insertRow(i)
+            table.setItem(i, 0, QtWidgets.QTableWidgetItem(k))
+            table.setItem(i, 1, QtWidgets.QTableWidgetItem(v))
+    
+        layout.addWidget(table)
+    
+        btn_close = QtWidgets.QPushButton("Close")
+        btn_close.clicked.connect(dialog.accept)
+        layout.addWidget(btn_close)
+    
+        dialog.exec_()
+
+
+    # ---------------------------
+    # Run commands (threaded)
+    # ---------------------------
+    def _run_command_on_jobs(self, command, job_ids):
+        if not job_ids:
+            return
+        if not hasattr(self, "deadline_cmd") or not self.deadline_cmd:
+            deadline_bin_dir = os.getenv("DEADLINE_PATH", r"C:\Program Files\Thinkbox\Deadline10\bin")
+            self.deadline_cmd = os.path.join(deadline_bin_dir, "deadlinecommand")
+            if platform.system() == "Windows" and os.path.isfile(self.deadline_cmd + ".exe"):
+                self.deadline_cmd += ".exe"
+
+        # optionally disable action buttons to prevent double-clicks
+        self.suspend_btn.setEnabled(False)
+        self.resume_btn.setEnabled(False)
+        self.delete_btn.setEnabled(False)
+
+        for jid in job_ids:
+            runner = CommandRunner(self.deadline_cmd, command, jid)
+            runner.finished_running.connect(self._command_finished)
+            runner.finished.connect(lambda: self._thread_cleanup(runner))
+            runner.start()
+            self.threads.append(runner)
+
+    def suspend_selected_jobs(self):
+        self._run_command_on_jobs("SuspendJob", self.get_selected_job_ids())
+        # refresh after a short delay
+        QtCore.QTimer.singleShot(400, self.load_deadline_jobs)
+
+    def resume_selected_jobs(self):
+        self._run_command_on_jobs("ResumeJob", self.get_selected_job_ids())
+        QtCore.QTimer.singleShot(400, self.load_deadline_jobs)
+
+    def delete_selected_jobs(self):
+        self._run_command_on_jobs("DeleteJob", self.get_selected_job_ids())
+        QtCore.QTimer.singleShot(400, self.load_deadline_jobs)
+
+    def _command_finished(self, command, success, message):
+        # Called on main thread
+        print(f"{command} finished: success={success}, msg={message}")
+        # re-enable action buttons (could be more nuanced)
+        self.suspend_btn.setEnabled(True)
+        self.resume_btn.setEnabled(True)
+        self.delete_btn.setEnabled(True)
+        # optionally show small popup for failures
+        if not success:
+            QtWidgets.QMessageBox.warning(self, f"{command} failed", message or "Unknown error")
+
+# ---------------------------
+# Entrypoint
+# ---------------------------
+def show_deadline_viewer():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    viewer = DeadlineGUI()
+    viewer.show()
+    viewer.load_deadline_jobs()
+    return viewer
+
+
+# Always launch when script runs directly
+show_deadline_viewer()
+
+]]></script>
+  </tool>
+
+  <tool name="DeadlineManager" label="DeadlineManager" icon="$PIXELLAB/icons/deadline.png">
+    <script scriptType="python"><![CDATA[]]></script>
+  </tool>
+
+  <tool name="CameraViewer" label="CameraViewer" icon="$PIXELLAB/icons/camera.png">
+    <script scriptType="python"><![CDATA[import hou
+from PySide2 import QtWidgets, QtCore, QtGui
+
+# Function to recursively find all camera nodes
+def find_all_cameras(node):
+    cameras = []
+
+    if node.type().name() == "cam":
+        cameras.append(node)
+
+    for child in node.children():
+        cameras.extend(find_all_cameras(child))
+
+    return cameras
+
+
+# Main UI Class
+class CameraFinderUI(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super(CameraFinderUI, self).__init__(parent)
+
+        self.setWindowTitle("ð¥ Houdini Camera Finder")
+        self.setFixedSize(900, 550)
+
+        # Apply modern dark theme
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #2b2b2b;
+                color: #dddddd;
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 12px;
+                border-radius: 4px;
+            }
+            QPushButton {
+                background-color: #3c3f41;
+                border: 1px solid #5a5a5a;
+                padding: 4px 4px;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #4b5052;
+            }
+            QListWidget {
+                background-color: #1e1e1e;
+                border: 1px solid #5a5a5a;
+                border-radius: 8px;
+                padding: 1px;
+            }
+            QListWidget::item {
+                border-radius: 8px;
+                padding: 2px;
+            }
+            QListWidget::item:selected {
+                background-color: #007acc;
+                color: white;
+            }
+        """)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        # Find cameras button
+        self.find_button = QtWidgets.QPushButton("ð Find All Cameras")
+        self.find_button.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        layout.addWidget(self.find_button)
+
+        # Camera list
+        self.camera_list = QtWidgets.QListWidget()
+        self.camera_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.camera_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.camera_list.customContextMenuRequested.connect(self._show_context_menu)
+        layout.addWidget(self.camera_list)
+
+        # Connect button click
+        self.find_button.clicked.connect(self.populate_camera_list)
+
+    def populate_camera_list(self):
+        self.camera_list.clear()
+
+        root = hou.node("/obj")
+        if not root:
+            QtWidgets.QMessageBox.warning(self, "Error", "Root /obj node not found.")
+            return
+
+        cameras = find_all_cameras(root)
+
+        if not cameras:
+            self.camera_list.addItem("No cameras found.")
+            return
+
+        for cam in cameras:
+            self.camera_list.addItem(cam.path())
+
+    def _show_context_menu(self, pos):
+        menu = QtWidgets.QMenu()
+        selected_items = self.camera_list.selectedItems()
+        if selected_items:
+            menu.addAction("ð Copy Path(s)", self._copy_selected_paths)
+        menu.exec_(self.camera_list.viewport().mapToGlobal(pos))
+
+    def _copy_selected_paths(self):
+        paths = [item.text() for item in self.camera_list.selectedItems()]
+        QtWidgets.QApplication.clipboard().setText("\n".join(paths))
+
+
+# Show the UI immediately when the script runs
+def show_camera_finder():
+    try:
+        for widget in QtWidgets.QApplication.allWidgets():
+            if isinstance(widget, CameraFinderUI):
+                widget.close()
+    except:
+        pass
+
+    dialog = CameraFinderUI(hou.ui.mainQtWindow())
+    dialog.show()
+
+# Launch the UI
+show_camera_finder()
+]]></script>
+  </tool>
+</shelfDocument>
